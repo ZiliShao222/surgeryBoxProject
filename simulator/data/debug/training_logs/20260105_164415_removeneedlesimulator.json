@@ -1,0 +1,40 @@
+{
+  "username": "debug",
+  "completed_at": "2026-01-05T16:44:15.852502",
+  "training_data": {
+    "training_type": "remove_needle_simulator",
+    "training_mode": "remove_needle_simulator",
+    "elapsed_time": 21.200705528259277,
+    "accuracy": 100.0,
+    "events_triggered": {},
+    "max_pull_distance": 20,
+    "pull_config": {
+      "events_queue": [
+        [
+          3.1,
+          "Q5"
+        ],
+        [
+          4.7,
+          "Q4"
+        ],
+        [
+          6.8,
+          "Q3"
+        ],
+        [
+          14.4,
+          "Q3"
+        ]
+      ],
+      "event_map": {
+        "scream_distance_1": null,
+        "scream_distance_2": null,
+        "high_damping_distance": null,
+        "low_damping_distance": null
+      },
+      "damping_after_reposition": 0
+    },
+    "completed_at": "2026-01-05T16:44:15.852502"
+  }
+}

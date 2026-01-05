@@ -3,5 +3,6 @@
 
 void encoderInit();
 float readDistance();
+long readTicks();
 
 #endif

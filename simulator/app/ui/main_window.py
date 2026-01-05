@@ -546,7 +546,11 @@ class MainShell(QWidget):
         print(f"\n[Training] Entering _start_remove_needle_training with key: {training_key}")
         try:
             print(f"[Training] Importing RemoveNeedleTraining...")
-            from app.training_remove_needle import RemoveNeedleTraining
+            # Simulator 版本改用 MCU 驱动的简化实现（跳过P1-P3、无摄像头）
+            if training_key == "remove_needle_simulator":
+                from app.training_remove_needle_mcu import RemoveNeedleTraining
+            else:
+                from app.training_remove_needle import RemoveNeedleTraining
             print(f"[Training] Import successful")
             
             # 清除菜单栏选中
@@ -2850,6 +2854,26 @@ class MainShell(QWidget):
             """)
             btn_refresh.clicked.connect(self._refresh_wifi_display)
             wifi_l.addWidget(btn_refresh)
+            
+            # Auto connect to MCU WiFi
+            btn_connect_wifi = QPushButton("Connect MCU WiFi")
+            btn_connect_wifi.setStyleSheet("""
+                QPushButton {
+                    background: rgba(77, 163, 255, 0.3);
+                    border: 2px solid #4DA3FF;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-family: 'Segoe Print';
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: #003366;
+                    min-width: 140px;
+                }
+                QPushButton:hover { background: rgba(77, 163, 255, 0.4); }
+                QPushButton:pressed { background: rgba(77, 163, 255, 0.5); }
+            """)
+            btn_connect_wifi.clicked.connect(self._connect_mcu_wifi)
+            wifi_l.addWidget(btn_connect_wifi)
             wifi_l.addStretch()
             conn_l.addWidget(wifi_frame)
             
@@ -2914,6 +2938,18 @@ class MainShell(QWidget):
             self.lbl_current_wifi.setText("Checking...")
         except Exception as e:
             self.lbl_current_wifi.setText(f"Error")
+
+    def _connect_mcu_wifi(self):
+        """尝试自动连接 MCU WiFi (surgeryBox)"""
+        try:
+            from app.hardware_connector import HardwareConnector
+            success, msg = HardwareConnector.connect_to_mcu_wifi("surgeryBox")
+            if success:
+                self.lbl_current_wifi.setText(f"{msg}")
+            else:
+                self.lbl_current_wifi.setText(f"连接失败: {msg}")
+        except Exception as e:
+            self.lbl_current_wifi.setText(f"错误: {str(e)[:50]}")
     
     def _cleanup_wifi_thread(self):
         """Clean up WiFi thread after it finishes"""

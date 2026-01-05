@@ -9,5 +9,6 @@ extern float currentArray[4];
 
 // 标志位
 extern bool sequenceRunning;
+extern bool eventTriggered[4];
 
 #endif

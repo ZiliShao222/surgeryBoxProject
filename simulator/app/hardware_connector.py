@@ -232,6 +232,31 @@ class HardwareConnector:
         except Exception as e:
             return False, f"Error: {str(e)}"
 
+    @staticmethod
+    def connect_to_mcu_wifi(ssid: str = "surgeryBox") -> Tuple[bool, str]:
+        """
+        Attempt to connect to the MCU WiFi (Windows, netsh).
+        Requires已存在同名WiFi配置文件。
+        """
+        try:
+            result = subprocess.run(
+                ["netsh", "wlan", "connect", f"name={ssid}", f"ssid={ssid}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return True, f"已尝试连接 {ssid}"
+            else:
+                msg = result.stdout.strip() or result.stderr.strip()
+                return False, msg or "连接失败"
+        except subprocess.TimeoutExpired:
+            return False, "连接超时"
+        except FileNotFoundError:
+            return False, "未找到 netsh 命令"
+        except Exception as e:
+            return False, f"Error: {str(e)[:80]}"
+
 
 class WiFiThread(QThread):
     """Thread to get WiFi name without blocking UI"""
