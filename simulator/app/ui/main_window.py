@@ -28,7 +28,7 @@ import json
 from app.config import APP_NAME, APP_VERSION
 from app.ui.login_page import LoginPage
 from app.camera_manager import CameraManager
-from app.hardware_connector import HardwareConnector, ConnectionTestThread
+from app.hardware_connector import HardwareConnector
 from app.ui.theme import Theme, qss_for
 from app.ui.widgets import section_placeholder
 from app.ui.settings_widget import SettingsWidget
@@ -2822,16 +2822,16 @@ class MainShell(QWidget):
             conn_l.setSpacing(12)
             conn_l.setContentsMargins(0, 0, 0, 0)
             
-            # WiFi Section
+            # Wired hardware section
             wifi_frame = QFrame()
             wifi_frame.setStyleSheet("background: transparent;")
             wifi_l = QHBoxLayout(wifi_frame)
             
-            wifi_label = QLabel("Current WiFi:")
+            wifi_label = QLabel("Hardware Port:")
             wifi_label.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 700;")
             wifi_l.addWidget(wifi_label)
             
-            self.lbl_current_wifi = QLabel("Checking...")
+            self.lbl_current_wifi = QLabel("Checking serial ports...")
             self.lbl_current_wifi.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
             self.lbl_current_wifi.setMinimumWidth(250)
             wifi_l.addWidget(self.lbl_current_wifi)
@@ -2852,11 +2852,11 @@ class MainShell(QWidget):
                 QPushButton:hover { background: rgba(77, 163, 255, 0.4); }
                 QPushButton:pressed { background: rgba(77, 163, 255, 0.5); }
             """)
-            btn_refresh.clicked.connect(self._refresh_wifi_display)
+            btn_refresh.clicked.connect(self._refresh_serial_display)
             wifi_l.addWidget(btn_refresh)
             
-            # Auto connect to MCU WiFi
-            btn_connect_wifi = QPushButton("Connect MCU WiFi")
+            # Wired mode hint
+            btn_connect_wifi = QPushButton("Wired Setup")
             btn_connect_wifi.setStyleSheet("""
                 QPushButton {
                     background: rgba(77, 163, 255, 0.3);
@@ -2872,7 +2872,7 @@ class MainShell(QWidget):
                 QPushButton:hover { background: rgba(77, 163, 255, 0.4); }
                 QPushButton:pressed { background: rgba(77, 163, 255, 0.5); }
             """)
-            btn_connect_wifi.clicked.connect(self._connect_mcu_wifi)
+            btn_connect_wifi.clicked.connect(self._show_wired_hardware_hint)
             wifi_l.addWidget(btn_connect_wifi)
             wifi_l.addStretch()
             conn_l.addWidget(wifi_frame)
@@ -2915,9 +2915,41 @@ class MainShell(QWidget):
             content_l = self.content.layout()
             content_l.insertWidget(2, self.simulator_conn_widget)
         
-        # Refresh WiFi on display
-        self._refresh_wifi_display()
+        # Refresh serial hardware on display
+        self._refresh_serial_display()
         self.simulator_conn_widget.setVisible(True)
+
+    def _refresh_serial_display(self):
+        """Refresh the wired serial hardware status shown on the Simulator page."""
+        try:
+            from app.hardware.serial_connector import list_serial_ports
+            preferred_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+            baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
+            ports = list_serial_ports()
+            if ports:
+                available = ", ".join(ports)
+                if preferred_port in ports:
+                    self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (available)")
+                else:
+                    self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (available: {available})")
+            else:
+                self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (no serial ports detected)")
+        except Exception as e:
+            self.lbl_current_wifi.setText(f"Serial status error: {str(e)[:60]}")
+
+    def _show_wired_hardware_hint(self):
+        """Show the first wired-station setup hints without changing system WiFi."""
+        try:
+            port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+            baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
+            self.lbl_connection_status.setText(
+                f"Wired mode: connect mannequin USB serial and camera to this PC. "
+                f"Default hardware port is {port} @ {baudrate}. "
+                f"Set SURGERYBOX_SERIAL_PORT if Windows assigns a different COM port."
+            )
+            self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
+        except Exception:
+            pass
     
     def _refresh_wifi_display(self):
         """Refresh WiFi display in background thread"""
@@ -2989,14 +3021,21 @@ class MainShell(QWidget):
             if hasattr(self, 'connection_thread') and self.connection_thread and self.connection_thread.isRunning():
                 return  # Already testing, ignore new request
             
-            # Start connection test in background thread
-            self.connection_thread = ConnectionTestThread()
+            from app.hardware.serial_connector import SerialConnectionTestThread
+            port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+            try:
+                baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
+            except ValueError:
+                baudrate = 115200
+
+            # Start wired serial connection test in background thread
+            self.connection_thread = SerialConnectionTestThread(port, baudrate)
             self.connection_thread.connection_result.connect(self._on_connection_result)
             self.connection_thread.finished.connect(lambda: self._cleanup_connection_thread())
             self.connection_thread.start()
             
             # Show waiting status
-            self.lbl_connection_status.setText("Testing connection...")
+            self.lbl_connection_status.setText(f"Testing serial connection on {port}...")
             self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
         except Exception as e:
             self.lbl_connection_status.setText(f"✗ Error")

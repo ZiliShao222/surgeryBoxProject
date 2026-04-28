@@ -3,3 +3,4 @@ mediapipe==0.10.0
 opencv-python==4.8.0.74
 numpy==1.24.3
 requests==2.31.0
+pyserial==3.5

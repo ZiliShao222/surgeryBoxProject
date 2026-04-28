@@ -14,6 +14,14 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QPushButton
 from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QBrush
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
+try:
+    from app.hardware.serial_connector import SerialHardwareListener
+except Exception as exc:
+    SerialHardwareListener = None
+    SERIAL_IMPORT_ERROR = exc
+else:
+    SERIAL_IMPORT_ERROR = None
+
 
 class ExternalUDPListener(QThread):
     message_received = Signal(str)
@@ -433,6 +441,15 @@ class RemoveNeedleTraining(QWidget):
         self.board_port = 4210
         self.local_udp_port = 4211  # PC监听端口
         self.external_thread = None
+        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
+        if self.hardware_transport not in ("serial", "udp"):
+            self.hardware_transport = "serial"
+        self.serial_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3").strip() or "COM3"
+        try:
+            self.serial_baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
+        except ValueError:
+            self.serial_baudrate = 115200
+        self.serial_thread = None
         self.external_event_flags = []
         # 速度显示相关（MCU模式）
         self.speed_display_end = 0.0
@@ -668,7 +685,7 @@ class RemoveNeedleTraining(QWidget):
         if getattr(self, "disable_camera", False):
             print("[SKIP_P1_P3] Camera disabled; skipping phases 1-3, jumping to Phase 4")
             # [SKIP_P1_P3] self._start_phase_1()  # 保留标记：跳过Phase1-3
-            self._start_external_listener()
+            self._start_hardware_listener()
             self._start_phase_4()
             QTimer.singleShot(1000, lambda: self._send_start_when_ready())
             return
@@ -1700,7 +1717,60 @@ class RemoveNeedleTraining(QWidget):
             self._update_info_overlay()
             self.camera_display.setStyleSheet("background: black; color: white; font-size: 20px;")
             # 确保监听线程已启动
+            self._start_hardware_listener()
+
+    def _start_hardware_listener(self):
+        """Start the selected hardware transport for Phase 4."""
+        if self.hardware_transport == "udp":
             self._start_external_listener()
+            return
+        self._start_serial_listener()
+
+    def _start_serial_listener(self):
+        """Start USB serial telemetry for the wired training station."""
+        if self.serial_thread:
+            return
+        if SerialHardwareListener is None:
+            message = f"Serial connector unavailable: {SERIAL_IMPORT_ERROR}"
+            self.last_event_msg = message
+            self._update_info_overlay()
+            print(f"[Serial] {message}")
+            return
+        try:
+            self.serial_thread = SerialHardwareListener(self.serial_port, self.serial_baudrate)
+            self.serial_thread.message_received.connect(self._on_serial_message)
+            self.serial_thread.connection_changed.connect(self._on_serial_connection_changed)
+            self.serial_thread.start()
+            print(f"[Serial] Listener starting on {self.serial_port} @ {self.serial_baudrate}")
+        except Exception as e:
+            self.serial_thread = None
+            print(f"[Serial] Failed to start serial listener: {e}")
+
+    def _on_serial_connection_changed(self, connected: bool, message: str):
+        state = "connected" if connected else "disconnected"
+        print(f"[Serial] {state}: {message}")
+        if not connected and message and message != "Serial disconnected":
+            self.last_event_msg = message
+            self._update_info_overlay()
+
+    def _on_serial_message(self, msg: str):
+        print(f"[Serial] Received: {msg}")
+        self._on_external_message(msg)
+
+    def _hardware_ready(self):
+        if self.hardware_transport == "serial":
+            return bool(self.serial_thread and getattr(self.serial_thread, "ready", False))
+        return bool(self.external_thread and getattr(self.external_thread, "ready", False))
+
+    def _hardware_last_error(self):
+        try:
+            if self.hardware_transport == "serial" and self.serial_thread:
+                return getattr(self.serial_thread, "last_error", "")
+            if self.external_thread:
+                return getattr(self.external_thread, "last_error", "")
+        except Exception:
+            return ""
+        return ""
 
     def _start_external_listener(self):
         """启动UDP监听，接收MCU信号驱动Phase4"""
@@ -1717,19 +1787,14 @@ class RemoveNeedleTraining(QWidget):
     def _send_start_when_ready(self, retries: int = 20):
         """确保监听socket就绪后再发送Start，避免回包落到随机端口"""
         try:
-            if self.external_thread and getattr(self.external_thread, "ready", False):
-                self._send_to_mcu("Start")
+            if self._hardware_ready():
+                self._send_hardware_message("Start")
                 return
         except Exception:
             pass
         if retries <= 0:
-            err = ""
-            try:
-                if self.external_thread:
-                    err = getattr(self.external_thread, "last_error", "")
-            except Exception:
-                pass
-            print(f"[External] UDP listener not ready, Start not sent. {err}".strip())
+            err = self._hardware_last_error()
+            print(f"[Hardware] {self.hardware_transport} listener not ready, Start not sent. {err}".strip())
             return
         QTimer.singleShot(100, lambda: self._send_start_when_ready(retries - 1))
 
@@ -2269,6 +2334,17 @@ class RemoveNeedleTraining(QWidget):
         """清理资源"""
         try:
             print(f"[RemoveNeedleTraining.cleanup] Starting cleanup")
+            try:
+                if self.serial_thread:
+                    print("[Serial] Stopping serial listener")
+                    self.serial_thread.stop()
+                    try:
+                        self.serial_thread.wait(1000)
+                    except Exception:
+                        pass
+                    self.serial_thread = None
+            except Exception:
+                pass
             # 关闭外部UDP线程
             try:
                 if self.external_thread:
@@ -2413,6 +2489,17 @@ class RemoveNeedleTraining(QWidget):
                 self.phase4_events_completed = min(self.phase4_events_completed + 1, 4)
         except Exception as e:
             print(f"[RemoveNeedleTraining] Error recording quiz result: {e}")
+    def _send_hardware_message(self, msg: str):
+        """Send a command through the active hardware transport."""
+        if self.hardware_transport == "serial":
+            if self.serial_thread and self.serial_thread.send_message(msg):
+                print(f"[Serial->MCU] Sent: {msg}")
+                return True
+            print(f"[Serial->MCU] Send skipped; serial not ready: {msg}")
+            return False
+        self._send_to_mcu(msg)
+        return True
+
     def _send_to_mcu(self, msg: str):
         """向MCU发送UDP消息，并打印日志"""
         # 优先使用监听线程的socket保证源端口一致
