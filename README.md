@@ -12,7 +12,7 @@
 | [docs/project-overview.md](docs/project-overview.md) | 项目目标、模块划分、目录结构、当前状态 |
 | [docs/setup-and-run.md](docs/setup-and-run.md) | Python 模拟器、PlatformIO 固件、UDP 测试脚本的运行方式 |
 | [docs/hardware-and-protocol.md](docs/hardware-and-protocol.md) | ESP8266 固件、硬件引脚、WiFi/HTTP/UDP 协议、事件流程 |
-| [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md) | 最终手机端、人体模型硬件、外部摄像头、上位机低延迟融合架构 |
+| [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md) | 最终有线训练站、人体模型硬件、外部摄像头、上位机低延迟融合架构 |
 | [docs/simulator-training-flow.md](docs/simulator-training-flow.md) | 桌面端 UI、登录、训练流程、Quiz 与记录逻辑 |
 | [docs/data-ai-and-maintenance.md](docs/data-ai-and-maintenance.md) | 数据目录、AI Mentor、配置、安全风险、维护建议 |
 
@@ -122,6 +122,6 @@ python udp_flow_tester.py --mcu-ip 192.168.4.1 --mcu-port 4210 --local-port 4211
 1. 先读 [docs/project-overview.md](docs/project-overview.md)，建立整体地图。
 2. 如果要运行项目，读 [docs/setup-and-run.md](docs/setup-and-run.md)。
 3. 如果要调硬件，读 [docs/hardware-and-protocol.md](docs/hardware-and-protocol.md)。
-4. 如果要规划最终手机端、人体模型内硬件、外部摄像头和上位机，读 [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md)。
+4. 如果要规划最终有线训练站、人体模型内硬件、外部摄像头和上位机，读 [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md)。
 5. 如果要改训练流程或 UI，读 [docs/simulator-training-flow.md](docs/simulator-training-flow.md)。
 6. 如果要处理数据、AI、发布和维护，读 [docs/data-ai-and-maintenance.md](docs/data-ai-and-maintenance.md)。

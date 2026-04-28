@@ -9,7 +9,7 @@
 | 第一次接手项目 | [project-overview.md](project-overview.md) |
 | 只想把项目跑起来 | [setup-and-run.md](setup-and-run.md) |
 | 调 ESP8266、编码器、舵机、电机 | [hardware-and-protocol.md](hardware-and-protocol.md) |
-| 规划最终手机端、人体模型硬件、摄像头和上位机 | [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md) |
+| 规划最终有线训练站、人体模型硬件、摄像头和上位机 | [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md) |
 | 改训练 UI、Quiz 或流程 | [simulator-training-flow.md](simulator-training-flow.md) |
 | 处理数据、AI、配置、安全问题 | [data-ai-and-maintenance.md](data-ai-and-maintenance.md) |
 
@@ -20,7 +20,7 @@
 | [project-overview.md](project-overview.md) | 项目目标、模块边界、目录结构、当前状态 |
 | [setup-and-run.md](setup-and-run.md) | 安装依赖、运行桌面端、编译上传固件、测试通信 |
 | [hardware-and-protocol.md](hardware-and-protocol.md) | 引脚、编码器换算、舵机角度、UDP 指令、事件状态机 |
-| [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md) | 手机教师/学生端、人体模型内部硬件、外部摄像头、上位机低延迟融合架构 |
+| [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md) | 有线训练站、人体模型内部硬件、外部摄像头、上位机低延迟融合架构 |
 | [simulator-training-flow.md](simulator-training-flow.md) | 主界面、训练入口、No Simulator / Simulator 流程、Quiz 和记录 |
 | [data-ai-and-maintenance.md](data-ai-and-maintenance.md) | 本地数据、AI Mentor、密钥风险、`.gitignore` 和维护建议 |
 
@@ -36,7 +36,7 @@
 ## 文档维护规则
 
 - 修改 MCU UDP 指令、端口、事件名称时，同步更新 [hardware-and-protocol.md](hardware-and-protocol.md)。
-- 修改最终产品拓扑、摄像头接口、上位机/Gateway 职责或手机端职责时，同步更新 [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md)。
+- 修改最终产品拓扑、硬件有线接口、摄像头接口、上位机职责或软件端职责时，同步更新 [mobile-hardware-camera-architecture.md](mobile-hardware-camera-architecture.md)。
 - 修改桌面端训练阶段、Quiz 触发、记录格式时，同步更新 [simulator-training-flow.md](simulator-training-flow.md)。
 - 修改依赖、启动方式、模型下载方式时，同步更新 [setup-and-run.md](setup-and-run.md)。
 - 修改 AI provider、密钥读取方式、数据目录或发布策略时，同步更新 [data-ai-and-maintenance.md](data-ai-and-maintenance.md)。
