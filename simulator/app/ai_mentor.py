@@ -78,7 +78,7 @@ If asked "Who are you?" reply exactly: "I am an AI nursing mentor."""
         key = self.api_key or os.getenv("DASHSCOPE_API_KEY")
         if not key:
             print("[AIMentor] API key not provided or DASHSCOPE_API_KEY not set")
-            return "Error: API key not configured. Set DASHSCOPE_API_KEY environment variable or provide key in config."
+            return "Error: API key not configured. Set API_KEY in app/ai_config_local.py."
 
         try:
             client = OpenAI(api_key=key, base_url=self.base_url)

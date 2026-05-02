@@ -2352,7 +2352,7 @@ class MainShell(QWidget):
             # Validate API config
             api_key = API_KEY or os.getenv("DASHSCOPE_API_KEY", "")
             if api_key == "your-api-key-here" or not api_key:
-                print("[MainWindow] Error: API key not configured. Please set DASHSCOPE_API_KEY")
+                print("[MainWindow] Error: API key not configured. Please set API_KEY in app/ai_config_local.py")
                 return None
 
             # 创建AI导师实例（支持传入 model/base_url）
@@ -2388,7 +2388,7 @@ class MainShell(QWidget):
                 QMessageBox.warning(
                     self,
                     "AI Mentor Not Configured",
-                    "AI Mentor is not configured.\n\nPlease set DASHSCOPE_API_KEY before launching the app."
+                    "AI Mentor is not configured.\n\nPlease set API_KEY in app/ai_config_local.py."
                 )
                 return
             
@@ -2418,8 +2418,8 @@ class MainShell(QWidget):
                 "Error",
                 "Failed to load AI Mentor.\n\n"
                 "Please ensure:\n"
-                "1. Set DASHSCOPE_API_KEY in your terminal\n"
-                "2. Optionally set DASHSCOPE_MODEL / DASHSCOPE_BASE_URL\n"
+                "1. API_KEY is set in app/ai_config_local.py\n"
+                "2. MODEL / BASE_URL are set in app/ai_config_local.py\n"
                 "3. Restart the application"
             )
 
