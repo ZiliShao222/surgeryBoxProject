@@ -1,24 +1,17 @@
-# Local AI config - create this file from ai_config_example.py and fill your real API key
-# This file is ignored by .gitignore to avoid committing secrets.
+"""Local AI Mentor defaults.
 
-# API配置
-# Prefer using environment variable DASHSCOPE_API_KEY for security.
-# If you prefer to store a key here (not recommended), set API_KEY to the string.
+This file is tracked so every developer gets the same provider/model defaults.
+Put the real API key in DASHSCOPE_API_KEY instead of hardcoding it here.
+"""
+
 import os
+
 API_URL = ""
-#API_KEY = os.getenv("DASHSCOPE_API_KEY")  # set via env var or replace with "sk-..." (not recommended)
-API_KEY = "sk-99b958b0a12442fab5cf06ee6b7e6d76"
-# 可选配置
+API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+
 TEMPERATURE = 0.7
 MAX_TOKENS = 2000
 TIMEOUT = 30
 
-# OpenAI-compatible client options
-MODEL = "qwen-plus"
-# Recommended BASE_URL for Dashscope (Alibaba compatible mode)
-BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-# Usage notes:
-# 1. Replace API_KEY with the real key string.
-# 2. If you're using an OpenAI-compatible SDK, set BASE_URL and MODEL as needed.
-# 3. Restart the application after editing this file.
+MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-plus")
+BASE_URL = os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")

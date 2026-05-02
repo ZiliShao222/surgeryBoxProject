@@ -2347,21 +2347,20 @@ class MainShell(QWidget):
             except ImportError:
                 # 使用示例配置
                 from app.ai_config_example import API_URL, API_KEY, MODEL, BASE_URL
-                print("[MainWindow] Warning: Using example config. Please create ai_config_local.py with your API key")
-                # 保持 self.ai_mentor 为 None
-                return None
+                print("[MainWindow] Warning: Using example AI config. Prefer DASHSCOPE_API_KEY env var for secrets")
 
-            # 验证API配置
-            if API_KEY == "your-api-key-here" or not API_KEY:
-                print("[MainWindow] Error: API key not configured. Please set it in app/ai_config_local.py")
+            # Validate API config
+            api_key = API_KEY or os.getenv("DASHSCOPE_API_KEY", "")
+            if api_key == "your-api-key-here" or not api_key:
+                print("[MainWindow] Error: API key not configured. Please set DASHSCOPE_API_KEY")
                 return None
 
             # 创建AI导师实例（支持传入 model/base_url）
             try:
-                self.ai_mentor = AIMentor(API_URL, API_KEY, model=MODEL, base_url=BASE_URL)
+                self.ai_mentor = AIMentor(API_URL, api_key, model=MODEL, base_url=BASE_URL)
             except Exception:
                 # 兼容旧构造（若MODEL/BASE_URL不存在）
-                self.ai_mentor = AIMentor(API_URL, API_KEY)
+                self.ai_mentor = AIMentor(API_URL, api_key)
 
             print("[MainWindow] AI Mentor initialized successfully")
             return self.ai_mentor
@@ -2389,7 +2388,7 @@ class MainShell(QWidget):
                 QMessageBox.warning(
                     self,
                     "AI Mentor Not Configured",
-                    "AI Mentor is not configured.\n\nPlease create app/ai_config_local.py from app/ai_config_example.py and fill in your API key."
+                    "AI Mentor is not configured.\n\nPlease set DASHSCOPE_API_KEY before launching the app."
                 )
                 return
             
@@ -2419,9 +2418,9 @@ class MainShell(QWidget):
                 "Error",
                 "Failed to load AI Mentor.\n\n"
                 "Please ensure:\n"
-                "1. Create app/ai_config_local.py with your API key\n"
-                "2. Copy from app/ai_config_example.py\n"
-                "3. Fill in your actual API key"
+                "1. Set DASHSCOPE_API_KEY in your terminal\n"
+                "2. Optionally set DASHSCOPE_MODEL / DASHSCOPE_BASE_URL\n"
+                "3. Restart the application"
             )
 
     def _save_practice_record(self, correct, total):

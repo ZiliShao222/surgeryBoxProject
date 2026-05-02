@@ -80,13 +80,17 @@ If asked "Who are you?" reply exactly: "I am an AI nursing mentor."""
             print("[AIMentor] API key not provided or DASHSCOPE_API_KEY not set")
             return "Error: API key not configured. Set DASHSCOPE_API_KEY environment variable or provide key in config."
 
-        client = OpenAI(api_key=key, base_url=self.base_url)
+        try:
+            client = OpenAI(api_key=key, base_url=self.base_url)
 
-        completion = client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "system", "content": self.SYSTEM_PROMPT}] + self.conversation_history,
-            temperature=temperature,
-        )
+            completion = client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": self.SYSTEM_PROMPT}] + self.conversation_history,
+                temperature=temperature,
+            )
+        except Exception as e:
+            print(f"[AIMentor] AI request failed: {e}")
+            return f"Error: AI request failed. {str(e)[:200]}"
 
         # 返回完整 JSON（如果需要）或只取 content
         try:
