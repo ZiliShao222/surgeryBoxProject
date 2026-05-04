@@ -292,6 +292,11 @@ class StudentShell(QWidget):
         btn_sim_conn.clicked.connect(lambda: self._on_button_click(self._show_simulator_connection))
         top_l.addWidget(btn_sim_conn)
 
+        # Per-account theme toggle for the student shell.
+        btn_theme = QPushButton("Theme")
+        btn_theme.clicked.connect(lambda: self._on_button_click(self.on_toggle_theme))
+        top_l.addWidget(btn_theme)
+
         # Settings (placeholder)
         btn_settings = QPushButton("Settings")
         btn_settings.clicked.connect(lambda: self._on_button_click(self._show_settings))

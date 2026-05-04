@@ -12,4 +12,5 @@ __pycache__/
 .vscode/settings.json
 /data/
 data/debug/
+simulator/user_accounts.json
 models/*.task
