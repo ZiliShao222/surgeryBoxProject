@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 )
 
 from types import SimpleNamespace
+from pathlib import Path
 
 from app.config import APP_NAME
 from app.auth import authenticate
@@ -37,7 +38,7 @@ class LoginPage(QWidget):
 
         # ===== Background =====
         bg = QLabel()
-        bg.setPixmap(QPixmap("assets/background.jpg"))
+        bg.setPixmap(QPixmap(str(self._background_path())))
         bg.setScaledContents(True)
         root.addWidget(bg)
 
@@ -180,6 +181,19 @@ class LoginPage(QWidget):
     # --------------------------------------------------
     # Helpers
     # --------------------------------------------------
+    def _background_path(self):
+        """Prefer the project-level generated background, with the old asset as fallback."""
+        candidates = [
+            Path.cwd() / "back.png",
+            Path.cwd().parent / "back.png",
+            Path(__file__).resolve().parents[3] / "back.png",
+            Path.cwd() / "assets" / "background.jpg",
+        ]
+        for path in candidates:
+            if path.exists():
+                return path
+        return candidates[-1]
+
     def _style_input(self, w):
         w.setFixedHeight(42)
         w.setStyleSheet("""
