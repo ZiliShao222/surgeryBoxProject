@@ -59,6 +59,10 @@ class TeacherShell(QWidget):
                 color: #173b2f;
                 font-family: 'Segoe UI', Arial;
             }
+            QWidget#TeacherShell QLabel {
+                background: transparent;
+                border: none;
+            }
             QFrame#TeacherTopBar, QFrame#TeacherCard, QFrame#TeacherMenu {
                 background: rgba(255, 255, 255, 0.86);
                 border: 1px solid rgba(32, 92, 72, 0.12);
@@ -72,6 +76,12 @@ class TeacherShell(QWidget):
             QLabel#TeacherSubtitle {
                 color: #4c6b60;
                 font-size: 13px;
+            }
+            QLabel#TeacherSectionTitle, QLabel#TeacherPageTitle {
+                color: #12392d;
+                background: transparent;
+                border: none;
+                font-weight: 800;
             }
             QLabel#CardValue {
                 color: #0f513f;
@@ -202,8 +212,8 @@ class TeacherShell(QWidget):
         layout.setSpacing(10)
 
         label = QLabel("Teacher Modules")
+        label.setObjectName("TeacherSectionTitle")
         label.setFont(QFont("Segoe UI", 18, QFont.Bold))
-        label.setStyleSheet("color: #12392d;")
         layout.addWidget(label)
 
         self.menu_list = QListWidget()
@@ -424,8 +434,8 @@ class TeacherShell(QWidget):
         layout = QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
         title_label = QLabel(title)
+        title_label.setObjectName("TeacherPageTitle")
         title_label.setFont(QFont("Segoe UI", 22, QFont.Bold))
-        title_label.setStyleSheet("color: #12392d;")
         subtitle_label = QLabel(subtitle)
         subtitle_label.setObjectName("TeacherSubtitle")
         layout.addWidget(title_label)
@@ -483,6 +493,10 @@ class TeacherShell(QWidget):
                 color: {palette['text']};
                 font-family: 'Aptos', 'Segoe UI', Arial;
             }}
+            QWidget#TeacherShell QLabel {{
+                background: transparent;
+                border: none;
+            }}
             QFrame#TeacherTopBar, QFrame#TeacherCard, QFrame#TeacherMenu {{
                 background: {palette['panel']};
                 border: 1px solid {palette['border']};
@@ -496,6 +510,12 @@ class TeacherShell(QWidget):
             QLabel#TeacherSubtitle {{
                 color: {palette['muted']};
                 font-size: 13px;
+            }}
+            QLabel#TeacherSectionTitle, QLabel#TeacherPageTitle {{
+                color: {palette['text']};
+                background: transparent;
+                border: none;
+                font-weight: 800;
             }}
             QLabel#CardValue {{
                 color: {palette['accent']};
