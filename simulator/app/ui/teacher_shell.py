@@ -302,7 +302,27 @@ class TeacherShell(QWidget):
         ai_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
         ai_controls.addWidget(ai_title)
         ai_controls.addStretch(1)
-        self.teacher_ai_btn = QPushButton("Generate")
+        self.teacher_ai_btn = QPushButton("Generate Teaching Insight")
+        self.teacher_ai_btn.setMinimumHeight(42)
+        self.teacher_ai_btn.setStyleSheet(
+            """
+            QPushButton {
+                background: #0f8a64;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 10px 18px;
+                font-size: 15px;
+                font-weight: 800;
+            }
+            QPushButton:hover {
+                background: #0b7252;
+            }
+            QPushButton:disabled {
+                background: #9ab8ad;
+            }
+            """
+        )
         self.teacher_ai_btn.clicked.connect(self._generate_teacher_ai_insight)
         ai_controls.addWidget(self.teacher_ai_btn)
         detail_layout.addLayout(ai_controls)
@@ -310,7 +330,9 @@ class TeacherShell(QWidget):
         self.teacher_ai_insight = QTextEdit()
         self.teacher_ai_insight.setReadOnly(True)
         self.teacher_ai_insight.setMaximumHeight(170)
-        self.teacher_ai_insight.setText("Select a student, then generate an AI teaching suggestion.")
+        self.teacher_ai_insight.setText(
+            "Select a student, then click Generate Teaching Insight to review level and difficulty suggestions."
+        )
         detail_layout.addWidget(self.teacher_ai_insight)
 
         record_title = QLabel("Training Attempts")
@@ -597,7 +619,7 @@ class TeacherShell(QWidget):
             lines.append("No training records for this student yet.")
         self.student_detail.setText("\n".join(lines))
         self.teacher_ai_insight.setText(
-            "Click Generate to assess this student's level and next training difficulty."
+            "Click Generate Teaching Insight to assess this student's level and next training difficulty."
         )
         self._update_student_records_table(records)
 

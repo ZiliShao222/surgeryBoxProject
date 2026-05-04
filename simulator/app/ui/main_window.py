@@ -852,6 +852,12 @@ class StudentShell(QWidget):
         actions.addWidget(self._student_action_button("Start Simulator\nTraining", "remove_needle_simulator"))
         actions.addWidget(self._student_action_button("Start Camera AR\nTraining", "remove_needle_no_simulator"))
 
+        summary_btn = QPushButton("Generate AI\nSummary")
+        summary_btn.setStyleSheet(self._student_action_button_style())
+        summary_btn.clicked.connect(self._generate_student_ai_summary)
+        self.student_ai_summary_btn = summary_btn
+        actions.addWidget(summary_btn)
+
         records_btn = QPushButton("View My\nRecords")
         records_btn.setStyleSheet(self._student_action_button_style())
         records_btn.clicked.connect(lambda: self._on_button_click(self._show_training_records))
@@ -885,25 +891,6 @@ class StudentShell(QWidget):
         ai_title.setStyleSheet("font-family: 'Segoe Print'; font-size: 18px; color: #003366; font-weight: 700;")
         ai_header.addWidget(ai_title)
         ai_header.addStretch(1)
-        ai_btn = QPushButton("Generate Latest Summary")
-        ai_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(77, 163, 255, 0.22);
-                border: 2px solid #4DA3FF;
-                border-radius: 8px;
-                padding: 8px 12px;
-                font-family: 'Segoe Print', 'Segoe UI', Arial;
-                font-size: 13px;
-                font-weight: 700;
-                color: #003366;
-            }
-            QPushButton:hover {
-                background: rgba(77, 163, 255, 0.32);
-            }
-        """)
-        ai_btn.clicked.connect(self._generate_student_ai_summary)
-        self.student_ai_summary_btn = ai_btn
-        ai_header.addWidget(ai_btn)
         layout.addLayout(ai_header)
 
         self.student_ai_summary = QTextEdit()
@@ -921,7 +908,7 @@ class StudentShell(QWidget):
             }
         """)
         self.student_ai_summary.setText(
-            "Complete a training attempt, then generate an AI summary of your latest performance."
+            "After training, a summary is generated automatically. You can also click Generate AI Summary above."
         )
         layout.addWidget(self.student_ai_summary)
         layout.addStretch(1)
@@ -1043,6 +1030,10 @@ class StudentShell(QWidget):
         finally:
             if hasattr(self, "student_ai_summary_btn"):
                 self.student_ai_summary_btn.setEnabled(True)
+
+    def _open_student_ai_summary(self):
+        self._show_student_home()
+        QTimer.singleShot(100, self._generate_student_ai_summary)
 
     def _student_format_seconds(self, seconds):
         if seconds is None:
@@ -2350,6 +2341,26 @@ class StudentShell(QWidget):
         self.lbl_training_avg = QLabel("Average Time: 0s")
         self.lbl_training_avg.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
         stats_layout.addWidget(self.lbl_training_avg)
+
+        btn_training_ai_summary = QPushButton("Generate AI Summary")
+        btn_training_ai_summary.setStyleSheet("""
+            QPushButton {
+                background: rgba(77, 163, 255, 0.24);
+                border: 2px solid #4DA3FF;
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 14px;
+                font-weight: 700;
+                color: #003366;
+            }
+            QPushButton:hover {
+                background: rgba(77, 163, 255, 0.34);
+                border-color: #234f8d;
+            }
+        """)
+        btn_training_ai_summary.clicked.connect(self._open_student_ai_summary)
+        stats_layout.addWidget(btn_training_ai_summary)
         
         stats_layout.addStretch()
         records_layout.addWidget(stats_frame)
