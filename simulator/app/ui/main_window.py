@@ -97,6 +97,11 @@ class App(QMainWindow):
                         self.main.music_audio_output.setVolume(0.0)
                 except Exception:
                     pass
+        
+        # Reset theme to light before returning to login page
+        self.theme = Theme("light")
+        self.setStyleSheet(qss_for(self.theme))
+        
         if hasattr(self.login, "clear_fields"):
             self.login.clear_fields()
         self.stack.setCurrentWidget(self.login)
@@ -176,7 +181,7 @@ class StudentShell(QWidget):
     # Placeholder quotes - replace the strings below with your 5 short nursing quotes
     QUOTES = [
         "The most important practical lesson that can be given to nurses is to teach them what to observe.",
-        "Nursing is an art: and if it is to be made an art, it requires as exclusive a devotion as any painter’s or sculptor’s work.",
+        "Nursing is an art: and if it is to be made an art, it requires as exclusive a devotion as any painter's or sculptor's work.",
         "Nursing is a profession, not a task.",
         "The nurse is the last line of defence.",
         "When in doubt, stop and escalate.",
