@@ -202,7 +202,16 @@ class LoginPage(QWidget):
     def _debug_login(self):
         """Emit a debug user to bypass login (development helper)."""
         user = SimpleNamespace(username="debug", role="trainer")
+        self.clear_fields()
         self.logged_in.emit(user)
+
+    def clear_fields(self):
+        """Clear login inputs so the next user starts from a blank form."""
+        self.user.clear()
+        self.pw.clear()
+        self.err.clear()
+        self.err.setVisible(False)
+        self.user.setFocus()
 
     # --------------------------------------------------
     # Login logic
@@ -218,4 +227,5 @@ class LoginPage(QWidget):
             return
 
         self.err.setVisible(False)
+        self.clear_fields()
         self.logged_in.emit(user)

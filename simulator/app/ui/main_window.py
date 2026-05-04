@@ -53,6 +53,8 @@ class App(QMainWindow):
         self.stack.addWidget(self.login)
 
         self.main = None
+        if hasattr(self.login, "clear_fields"):
+            self.login.clear_fields()
         self.stack.setCurrentWidget(self.login)
 
     def _on_login(self, user):
@@ -95,6 +97,8 @@ class App(QMainWindow):
                         self.main.music_audio_output.setVolume(0.0)
                 except Exception:
                     pass
+        if hasattr(self.login, "clear_fields"):
+            self.login.clear_fields()
         self.stack.setCurrentWidget(self.login)
 
     def _toggle_theme(self):
