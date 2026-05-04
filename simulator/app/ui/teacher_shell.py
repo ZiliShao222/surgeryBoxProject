@@ -40,6 +40,7 @@ class TeacherShell(QWidget):
         self.record_manager = get_training_record_manager()
         self.student_rows = []
         self.records_by_user = {}
+        self.selected_student = None
 
         self._build_ui()
         self.refresh_data()
@@ -253,6 +254,20 @@ class TeacherShell(QWidget):
             )
         )
 
+        split_layout = QHBoxLayout()
+        split_layout.setSpacing(12)
+        layout.addLayout(split_layout, 1)
+
+        student_panel = QFrame()
+        student_panel.setStyleSheet("background: transparent; border: none;")
+        student_layout = QVBoxLayout(student_panel)
+        student_layout.setContentsMargins(0, 0, 0, 0)
+        student_layout.setSpacing(8)
+
+        student_title = QLabel("Students")
+        student_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        student_layout.addWidget(student_title)
+
         self.records_table = QTableWidget(0, 7)
         self.records_table.setHorizontalHeaderLabels(
             ["Student", "Role", "Trainings", "Avg Time", "Best Time", "Avg Accuracy", "Last Training"]
@@ -262,15 +277,47 @@ class TeacherShell(QWidget):
         self.records_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.records_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.records_table.itemSelectionChanged.connect(self._show_selected_student_detail)
-        layout.addWidget(self.records_table, 2)
+        student_layout.addWidget(self.records_table, 1)
+        split_layout.addWidget(student_panel, 5)
 
-        detail_title = QLabel("Selected Student Detail")
-        detail_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
-        layout.addWidget(detail_title)
+        detail_panel = QFrame()
+        detail_panel.setStyleSheet("background: transparent; border: none;")
+        detail_layout = QVBoxLayout(detail_panel)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(8)
+
+        self.student_detail_title = QLabel("Selected Student")
+        self.student_detail_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        detail_layout.addWidget(self.student_detail_title)
 
         self.student_detail = QTextEdit()
         self.student_detail.setReadOnly(True)
-        layout.addWidget(self.student_detail, 1)
+        self.student_detail.setMaximumHeight(118)
+        detail_layout.addWidget(self.student_detail)
+
+        record_title = QLabel("Training Attempts")
+        record_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        detail_layout.addWidget(record_title)
+
+        self.student_records_table = QTableWidget(0, 6)
+        self.student_records_table.setHorizontalHeaderLabels(
+            ["Completed", "Mode", "Time", "Accuracy", "Events", "Quiz"]
+        )
+        self.student_records_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.student_records_table.verticalHeader().setVisible(False)
+        self.student_records_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.student_records_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.student_records_table.itemSelectionChanged.connect(self._show_selected_record_detail)
+        detail_layout.addWidget(self.student_records_table, 1)
+
+        record_detail_title = QLabel("Record Detail")
+        record_detail_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        detail_layout.addWidget(record_detail_title)
+
+        self.record_detail = QTextEdit()
+        self.record_detail.setReadOnly(True)
+        detail_layout.addWidget(self.record_detail, 1)
+        split_layout.addWidget(detail_panel, 6)
         return page
 
     def _build_assignments_page(self):
@@ -381,8 +428,13 @@ class TeacherShell(QWidget):
         for username in sorted(student_names):
             profile = profiles.get(username, {"role": "trainee"})
             stats = stats_by_user.get(username, self._empty_stats())
-            records = stats.get("details", [])
-            self.records_by_user[username] = records
+            summaries = stats.get("summaries")
+            if summaries is None:
+                summaries = [
+                    self.record_manager.normalize_training_record(record)
+                    for record in stats.get("details", [])
+                ]
+            self.records_by_user[username] = summaries
             rows.append(
                 {
                     "username": username,
@@ -390,8 +442,8 @@ class TeacherShell(QWidget):
                     "total": stats.get("total_trainings", 0),
                     "avg_time": stats.get("avg_time", 0),
                     "best_time": stats.get("best_time"),
-                    "avg_accuracy": self._average_accuracy(records),
-                    "last_training": self._format_last_training(stats.get("last_training")),
+                    "avg_accuracy": self._average_accuracy(summaries),
+                    "last_training": self._format_last_training(summaries[0] if summaries else None),
                 }
             )
         return rows
@@ -424,7 +476,7 @@ class TeacherShell(QWidget):
     def _average_accuracy(self, records):
         values = []
         for record in records:
-            value = record.get("training_data", {}).get("accuracy")
+            value = record.get("accuracy")
             if isinstance(value, (int, float)):
                 values.append(float(value))
         return sum(values) / len(values) if values else 0
@@ -465,12 +517,11 @@ class TeacherShell(QWidget):
         recent_records.sort(key=lambda item: item[1].get("completed_at", ""), reverse=True)
 
         for username, record in recent_records[:12]:
-            training = record.get("training_data", {})
             recent_lines.append(
                 f"{self._format_last_training(record)} | {username} | "
-                f"{training.get('training_mode', 'unknown')} | "
-                f"{self._format_seconds(training.get('elapsed_time', 0))} | "
-                f"{training.get('accuracy', 0):.0f}%"
+                f"{self._training_mode_label(record.get('training_mode', 'unknown'))} | "
+                f"{self._format_seconds(record.get('elapsed_time', 0))} | "
+                f"{record.get('accuracy', 0):.0f}%"
             )
 
         if not recent_lines:
@@ -510,18 +561,109 @@ class TeacherShell(QWidget):
             return
 
         username = username_item.text()
+        self.selected_student = username
         records = self.records_by_user.get(username, [])
-        lines = [f"Student: {username}", ""]
+        self.student_detail_title.setText(f"Selected Student: {username}")
+        row = self.student_rows[row]
+        lines = [
+            f"Student: {username}",
+            f"Role: {row['role']}",
+            f"Training attempts: {row['total']}",
+            f"Average time: {self._format_seconds(row['avg_time'])}",
+            f"Best time: {self._format_seconds(row['best_time'])}",
+            f"Average accuracy: {row['avg_accuracy']:.0f}%",
+            f"Last training: {row['last_training']}",
+        ]
         if not records:
+            lines.append("")
             lines.append("No training records for this student yet.")
-        else:
-            lines.append("Recent records:")
-            for record in records[:8]:
-                training = record.get("training_data", {})
-                lines.append(
-                    f"- {self._format_last_training(record)} | "
-                    f"{training.get('training_mode', 'unknown')} | "
-                    f"time {self._format_seconds(training.get('elapsed_time', 0))} | "
-                    f"accuracy {training.get('accuracy', 0):.0f}%"
-                )
         self.student_detail.setText("\n".join(lines))
+        self._update_student_records_table(records)
+
+    def _update_student_records_table(self, records):
+        self.student_records_table.setRowCount(len(records))
+        for row_index, record in enumerate(records):
+            values = [
+                self._format_last_training(record),
+                self._training_mode_label(record.get("training_mode", "unknown")),
+                self._format_seconds(record.get("elapsed_time", 0)),
+                f"{record.get('accuracy', 0):.0f}%",
+                str(record.get("events_count", 0)),
+                self._format_quiz_summary(record),
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.student_records_table.setItem(row_index, col, item)
+
+        if records:
+            self.student_records_table.selectRow(0)
+        else:
+            self.record_detail.setText("Select a student with training records to inspect attempt details.")
+
+    def _show_selected_record_detail(self):
+        if not self.selected_student:
+            return
+
+        selected = self.student_records_table.selectionModel().selectedRows()
+        if not selected:
+            return
+
+        records = self.records_by_user.get(self.selected_student, [])
+        row = selected[0].row()
+        if row >= len(records):
+            return
+
+        self.record_detail.setText(self._format_record_detail(records[row]))
+
+    def _format_record_detail(self, record):
+        lines = [
+            f"Completed: {self._format_last_training(record)}",
+            f"Mode: {self._training_mode_label(record.get('training_mode', 'unknown'))}",
+            f"Elapsed time: {self._format_seconds(record.get('elapsed_time', 0))}",
+            f"Accuracy: {record.get('accuracy', 0):.0f}%",
+            f"Events triggered: {record.get('events_count', 0)}",
+            f"Quiz: {self._format_quiz_summary(record)}",
+            "",
+            "Events:",
+            self._format_mapping(record.get("events")) or "No event details recorded.",
+            "",
+            "Pull / hardware config:",
+            self._format_mapping(record.get("pull_config")) or "No pull config recorded.",
+            "",
+            "Performance metrics:",
+            self._format_mapping(record.get("performance_metrics")) or "No performance metrics recorded.",
+        ]
+        return "\n".join(lines)
+
+    def _format_mapping(self, value):
+        if isinstance(value, dict):
+            if not value:
+                return ""
+            lines = []
+            for key, item in value.items():
+                if isinstance(item, float):
+                    item = f"{item:.2f}"
+                lines.append(f"- {key}: {item}")
+            return "\n".join(lines)
+
+        if isinstance(value, list):
+            if not value:
+                return ""
+            return "\n".join(f"- {item}" for item in value)
+
+        return ""
+
+    def _format_quiz_summary(self, record):
+        total = record.get("quiz_total", 0)
+        correct = record.get("quiz_correct", 0)
+        return "No quiz" if not total else f"{correct}/{total}"
+
+    def _training_mode_label(self, mode):
+        labels = {
+            "remove_needle_simulator": "Remove Needle (Simulator)",
+            "remove_needle_no_simulator": "Remove Needle (No Simulator)",
+            "change_dressing": "Change Dressing",
+            "comprehensive": "Comprehensive",
+        }
+        return labels.get(mode, mode or "unknown")

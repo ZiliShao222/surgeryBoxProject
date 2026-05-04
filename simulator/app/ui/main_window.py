@@ -759,18 +759,7 @@ class StudentShell(QWidget):
             self.simulator_conn_widget.setVisible(False)
         
         if key == "welcome":
-            # Verify welcome_quote exists before using it
-            if not hasattr(self, 'welcome_quote'):
-                print("Warning: welcome_quote not initialized yet")
-                return
-            
-            # show a large quote centered in content area
-            q = random.choice(self.QUOTES)
-            self.welcome_quote.setText(q)
-            self.welcome_quote.setVisible(True)
-            # hide other content
-            self.content_title.setVisible(False)
-            self.content_view.setVisible(False)
+            self._show_student_home()
             return
         elif key == "simulation":
             # Show three training option buttons
@@ -817,6 +806,188 @@ class StudentShell(QWidget):
     def _set_content(self, text: str):
         self.content_title.setText(text.splitlines()[0])
         self.content_view.setText(text)
+
+    def _show_student_home(self):
+        """Show a student-focused landing page with quick actions and recent progress."""
+        if not hasattr(self, 'welcome_quote') or not hasattr(self, 'content_title'):
+            QTimer.singleShot(200, self._show_student_home)
+            return
+
+        self._hide_all_content_containers()
+        self.welcome_quote.setVisible(False)
+        self.content_view.setVisible(False)
+        self.content_title.setText("Student Dashboard")
+        self.content_title.setVisible(True)
+
+        if hasattr(self, 'student_home_container') and self.student_home_container:
+            try:
+                self.content.layout().removeWidget(self.student_home_container)
+                self.student_home_container.deleteLater()
+            except Exception:
+                pass
+
+        self.student_home_container = QFrame()
+        self.student_home_container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.student_home_container)
+        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        greeting = QLabel(f"Welcome, {self.user.username}. Choose a training task or review your latest progress.")
+        greeting.setWordWrap(True)
+        greeting.setStyleSheet("font-family: 'Segoe Print'; font-size: 17px; color: #234f8d; font-weight: 600;")
+        layout.addWidget(greeting)
+
+        stats = self._get_student_training_stats()
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        cards.addWidget(self._student_metric_card("Completed", str(stats["total_trainings"])))
+        cards.addWidget(self._student_metric_card("Avg Time", self._student_format_seconds(stats["avg_time"])))
+        cards.addWidget(self._student_metric_card("Best Time", self._student_format_seconds(stats["best_time"])))
+        cards.addWidget(self._student_metric_card("Avg Accuracy", f"{stats['avg_accuracy']:.0f}%"))
+        layout.addLayout(cards)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(12)
+        actions.addWidget(self._student_action_button("Start Simulator\nTraining", "remove_needle_simulator"))
+        actions.addWidget(self._student_action_button("Start Camera AR\nTraining", "remove_needle_no_simulator"))
+
+        records_btn = QPushButton("View My\nRecords")
+        records_btn.setStyleSheet(self._student_action_button_style())
+        records_btn.clicked.connect(lambda: self._on_button_click(self._show_training_records))
+        actions.addWidget(records_btn)
+        layout.addLayout(actions)
+
+        recent_title = QLabel("Recent Training")
+        recent_title.setStyleSheet("font-family: 'Segoe Print'; font-size: 18px; color: #003366; font-weight: 700;")
+        layout.addWidget(recent_title)
+
+        recent = QTextEdit()
+        recent.setReadOnly(True)
+        recent.setMaximumHeight(160)
+        recent.setStyleSheet("""
+            QTextEdit {
+                background: rgba(255, 255, 255, 0.45);
+                border: 2px solid rgba(77, 163, 255, 0.25);
+                border-radius: 10px;
+                padding: 10px;
+                color: #003366;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 13px;
+            }
+        """)
+        recent.setText(self._student_recent_training_text(stats["summaries"]))
+        layout.addWidget(recent)
+        layout.addStretch(1)
+
+        self.content.layout().insertWidget(2, self.student_home_container)
+        self.student_home_container.setVisible(True)
+
+    def _student_metric_card(self, label, value):
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: rgba(255, 255, 255, 0.42);
+                border: 2px solid rgba(77, 163, 255, 0.25);
+                border-radius: 10px;
+                padding: 10px;
+            }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        value_label = QLabel(value)
+        value_label.setStyleSheet("font-size: 24px; color: #003366; font-weight: 800; background: transparent; border: none;")
+        label_label = QLabel(label)
+        label_label.setStyleSheet("font-size: 13px; color: #234f8d; font-weight: 650; background: transparent; border: none;")
+        layout.addWidget(value_label)
+        layout.addWidget(label_label)
+        return card
+
+    def _student_action_button(self, text, training_key):
+        button = QPushButton(text)
+        button.setStyleSheet(self._student_action_button_style())
+        button.clicked.connect(lambda: self._on_training_button_click(training_key))
+        return button
+
+    def _student_action_button_style(self):
+        return """
+            QPushButton {
+                background: rgba(77, 163, 255, 0.24);
+                border: 2px solid #4DA3FF;
+                border-radius: 10px;
+                padding: 16px;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 16px;
+                font-weight: 700;
+                color: #003366;
+                min-height: 78px;
+            }
+            QPushButton:hover {
+                background: rgba(77, 163, 255, 0.34);
+                border-color: #234f8d;
+            }
+        """
+
+    def _get_student_training_stats(self):
+        try:
+            from app.training_records import get_training_record_manager
+            manager = get_training_record_manager()
+            stats = manager.get_training_statistics(self.user.username)
+            summaries = stats.get("summaries", [])
+            accuracies = [item.get("accuracy", 0) for item in summaries if item.get("accuracy", 0) > 0]
+            stats["summaries"] = summaries
+            stats["avg_accuracy"] = sum(accuracies) / len(accuracies) if accuracies else 0
+            return stats
+        except Exception as e:
+            print(f"[StudentHome] Error loading training stats: {e}")
+            return {
+                "total_trainings": 0,
+                "avg_time": 0,
+                "best_time": None,
+                "avg_accuracy": 0,
+                "summaries": [],
+            }
+
+    def _student_recent_training_text(self, summaries):
+        if not summaries:
+            return "No training records yet. Start with Simulator Training or Camera AR Training."
+
+        lines = []
+        for item in summaries[:5]:
+            lines.append(
+                f"{self._student_format_date(item.get('completed_at'))} | "
+                f"{self._student_training_label(item.get('training_mode'))} | "
+                f"{self._student_format_seconds(item.get('elapsed_time'))} | "
+                f"{item.get('accuracy', 0):.0f}%"
+            )
+        return "\n".join(lines)
+
+    def _student_format_seconds(self, seconds):
+        if seconds is None:
+            return "-"
+        try:
+            seconds = int(float(seconds))
+        except (TypeError, ValueError):
+            return "-"
+        minutes, sec = divmod(seconds, 60)
+        return f"{minutes}m {sec}s" if minutes else f"{sec}s"
+
+    def _student_format_date(self, raw):
+        if not raw:
+            return "-"
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(raw).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(raw)[:16]
+
+    def _student_training_label(self, mode):
+        labels = {
+            "remove_needle_simulator": "Remove Needle (Simulator)",
+            "remove_needle_no_simulator": "Remove Needle (No Simulator)",
+            "change_dressing": "Change Dressing",
+            "comprehensive": "Comprehensive",
+        }
+        return labels.get(mode, mode or "unknown")
 
     def _show_elearning_content(self):
         """Show E-learning module with video player."""
@@ -2056,6 +2227,8 @@ class StudentShell(QWidget):
 
     def _show_training_records(self):
         """Show training (simulation) records with statistics."""
+        if hasattr(self, 'student_home_container'):
+            self.student_home_container.setVisible(False)
         self.content_view.setVisible(False)
         self.content_title.setText("Training Records")
         self.content_title.setVisible(True)
@@ -2530,6 +2703,8 @@ class StudentShell(QWidget):
             self.settings_container.setVisible(False)
         if hasattr(self, 'simulation_container'):
             self.simulation_container.setVisible(False)
+        if hasattr(self, 'student_home_container'):
+            self.student_home_container.setVisible(False)
         if hasattr(self, 'topic_container'):
             self.topic_container.setVisible(False)
         if hasattr(self, 'simulator_conn_widget'):
