@@ -1970,6 +1970,7 @@ class RemoveNeedleTraining(QWidget):
                 'elapsed_time': elapsed_time,
                 'accuracy': accuracy,  # 正确率（0-100%）
                 'events_triggered': self.events_triggered,
+                'events_results': self.events_results,
                 'max_pull_distance': self.max_pulled_distance_cm,
                 'pull_config': self.pull_config,
                 'completed_at': datetime.now().isoformat()

@@ -2,7 +2,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtWidgets import (
     QWidget, QMainWindow, QStackedWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QFrame, QListWidget, QListWidgetItem, QSlider, QComboBox,
-    QTextEdit, QScrollArea
+    QTextEdit, QScrollArea, QApplication
 )
 from PySide6.QtGui import QFont, QPixmap
 
@@ -696,8 +696,9 @@ class StudentShell(QWidget):
                 self.current_training = None
             
             # 显示训练选项
-            print(f"[Training] Showing simulation options")
-            self._show_simulation_options()
+            print(f"[Training] Showing student dashboard with AI summary")
+            self._show_student_home()
+            QTimer.singleShot(250, self._generate_student_ai_summary)
         except Exception as e:
             print(f"[Training] Error in training completion: {e}")
     
@@ -877,6 +878,52 @@ class StudentShell(QWidget):
         """)
         recent.setText(self._student_recent_training_text(stats["summaries"]))
         layout.addWidget(recent)
+
+        ai_header = QHBoxLayout()
+        ai_header.setSpacing(8)
+        ai_title = QLabel("AI Training Summary")
+        ai_title.setStyleSheet("font-family: 'Segoe Print'; font-size: 18px; color: #003366; font-weight: 700;")
+        ai_header.addWidget(ai_title)
+        ai_header.addStretch(1)
+        ai_btn = QPushButton("Generate Latest Summary")
+        ai_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(77, 163, 255, 0.22);
+                border: 2px solid #4DA3FF;
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 13px;
+                font-weight: 700;
+                color: #003366;
+            }
+            QPushButton:hover {
+                background: rgba(77, 163, 255, 0.32);
+            }
+        """)
+        ai_btn.clicked.connect(self._generate_student_ai_summary)
+        self.student_ai_summary_btn = ai_btn
+        ai_header.addWidget(ai_btn)
+        layout.addLayout(ai_header)
+
+        self.student_ai_summary = QTextEdit()
+        self.student_ai_summary.setReadOnly(True)
+        self.student_ai_summary.setMaximumHeight(190)
+        self.student_ai_summary.setStyleSheet("""
+            QTextEdit {
+                background: rgba(255, 255, 255, 0.45);
+                border: 2px solid rgba(77, 163, 255, 0.25);
+                border-radius: 10px;
+                padding: 10px;
+                color: #003366;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 13px;
+            }
+        """)
+        self.student_ai_summary.setText(
+            "Complete a training attempt, then generate an AI summary of your latest performance."
+        )
+        layout.addWidget(self.student_ai_summary)
         layout.addStretch(1)
 
         self.content.layout().insertWidget(2, self.student_home_container)
@@ -960,6 +1007,42 @@ class StudentShell(QWidget):
                 f"{item.get('accuracy', 0):.0f}%"
             )
         return "\n".join(lines)
+
+    def _generate_student_ai_summary(self):
+        if not hasattr(self, "student_ai_summary") or self.student_ai_summary is None:
+            return
+
+        stats = self._get_student_training_stats()
+        summaries = stats.get("summaries", [])
+        if not summaries:
+            self.student_ai_summary.setText(
+                "No training record is available yet. Complete one training attempt first."
+            )
+            return
+
+        if hasattr(self, "student_ai_summary_btn"):
+            self.student_ai_summary_btn.setEnabled(False)
+        self.student_ai_summary.setText("Generating latest training summary from the shared AI API...")
+        QApplication.processEvents()
+
+        try:
+            from app.ai_training_agents import create_student_training_agent
+
+            agent = create_student_training_agent()
+            summary = agent.summarize_after_training(
+                self.user.username,
+                summaries[0],
+                recent_records=summaries[1:6],
+            )
+            self.student_ai_summary.setText(summary)
+        except Exception as e:
+            print(f"[StudentHome] AI summary failed: {e}")
+            self.student_ai_summary.setText(
+                "AI training summary failed. Please check the API configuration and try again."
+            )
+        finally:
+            if hasattr(self, "student_ai_summary_btn"):
+                self.student_ai_summary_btn.setEnabled(True)
 
     def _student_format_seconds(self, seconds):
         if seconds is None:

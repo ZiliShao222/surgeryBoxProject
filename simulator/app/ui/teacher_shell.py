@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QApplication,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -295,6 +296,23 @@ class TeacherShell(QWidget):
         self.student_detail.setMaximumHeight(118)
         detail_layout.addWidget(self.student_detail)
 
+        ai_controls = QHBoxLayout()
+        ai_controls.setSpacing(8)
+        ai_title = QLabel("AI Teaching Insight")
+        ai_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        ai_controls.addWidget(ai_title)
+        ai_controls.addStretch(1)
+        self.teacher_ai_btn = QPushButton("Generate")
+        self.teacher_ai_btn.clicked.connect(self._generate_teacher_ai_insight)
+        ai_controls.addWidget(self.teacher_ai_btn)
+        detail_layout.addLayout(ai_controls)
+
+        self.teacher_ai_insight = QTextEdit()
+        self.teacher_ai_insight.setReadOnly(True)
+        self.teacher_ai_insight.setMaximumHeight(170)
+        self.teacher_ai_insight.setText("Select a student, then generate an AI teaching suggestion.")
+        detail_layout.addWidget(self.teacher_ai_insight)
+
         record_title = QLabel("Training Attempts")
         record_title.setFont(QFont("Segoe UI", 15, QFont.Bold))
         detail_layout.addWidget(record_title)
@@ -578,6 +596,9 @@ class TeacherShell(QWidget):
             lines.append("")
             lines.append("No training records for this student yet.")
         self.student_detail.setText("\n".join(lines))
+        self.teacher_ai_insight.setText(
+            "Click Generate to assess this student's level and next training difficulty."
+        )
         self._update_student_records_table(records)
 
     def _update_student_records_table(self, records):
@@ -616,6 +637,39 @@ class TeacherShell(QWidget):
 
         self.record_detail.setText(self._format_record_detail(records[row]))
 
+    def _generate_teacher_ai_insight(self):
+        if not self.selected_student:
+            self.teacher_ai_insight.setText("Please select a student first.")
+            return
+
+        records = self.records_by_user.get(self.selected_student, [])
+        student_row = next(
+            (row for row in self.student_rows if row["username"] == self.selected_student),
+            {},
+        )
+
+        self.teacher_ai_btn.setEnabled(False)
+        self.teacher_ai_insight.setText("Generating teaching insight from the shared AI API...")
+        QApplication.processEvents()
+
+        try:
+            from app.ai_training_agents import create_teacher_training_agent
+
+            agent = create_teacher_training_agent()
+            insight = agent.suggest_for_teacher(
+                self.selected_student,
+                records,
+                student_profile=student_row,
+            )
+            self.teacher_ai_insight.setText(insight)
+        except Exception as exc:
+            print(f"[TeacherShell] AI teaching insight failed: {exc}")
+            self.teacher_ai_insight.setText(
+                "AI teaching insight failed. Please check the API configuration and try again."
+            )
+        finally:
+            self.teacher_ai_btn.setEnabled(True)
+
     def _format_record_detail(self, record):
         lines = [
             f"Completed: {self._format_last_training(record)}",
@@ -624,6 +678,7 @@ class TeacherShell(QWidget):
             f"Accuracy: {record.get('accuracy', 0):.0f}%",
             f"Events triggered: {record.get('events_count', 0)}",
             f"Quiz: {self._format_quiz_summary(record)}",
+            f"Max pull distance: {record.get('max_pull_distance', 0):.1f} cm",
             "",
             "Events:",
             self._format_mapping(record.get("events")) or "No event details recorded.",

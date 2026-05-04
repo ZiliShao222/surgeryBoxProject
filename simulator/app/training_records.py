@@ -74,7 +74,12 @@ class TrainingRecordManager:
             or "unknown"
         )
         events = training_data.get("events") or training_data.get("events_triggered") or {}
-        quiz_results = training_data.get("quiz_results") or training_data.get("quiz") or []
+        quiz_results = (
+            training_data.get("quiz_results")
+            or training_data.get("quiz")
+            or training_data.get("events_results")
+            or []
+        )
         quiz_correct, quiz_total = self._count_quiz_results(quiz_results)
 
         return {
@@ -90,6 +95,7 @@ class TrainingRecordManager:
             "quiz_total": quiz_total,
             "performance_metrics": training_data.get("performance_metrics") or {},
             "pull_config": training_data.get("pull_config") or {},
+            "max_pull_distance": self._safe_float(training_data.get("max_pull_distance")),
             "file_path": record.get("file_path", ""),
             "raw": record,
         }
