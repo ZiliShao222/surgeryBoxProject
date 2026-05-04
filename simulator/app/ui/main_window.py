@@ -64,6 +64,11 @@ class App(QMainWindow):
             self.main = TeacherShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
         else:
             self.main = StudentShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        account_theme = self._theme_for_user(user.username)
+        self.theme = account_theme
+        self.setStyleSheet(qss_for(account_theme))
+        if hasattr(self.main, "apply_theme"):
+            self.main.apply_theme(account_theme)
         self.stack.addWidget(self.main)
         self.stack.setCurrentWidget(self.main)
 
@@ -93,8 +98,65 @@ class App(QMainWindow):
         self.stack.setCurrentWidget(self.login)
 
     def _toggle_theme(self):
-        self.theme = Theme("dark" if self.theme.name == "light" else "light")
-        self.setStyleSheet(qss_for(self.theme))
+        if not self.main or not hasattr(self.main, "user"):
+            return
+
+        username = self.main.user.username
+        current = self._theme_for_user(username)
+        next_theme = Theme("dark" if current.name == "light" else "light")
+        self._save_theme_for_user(username, next_theme.name)
+        self.theme = next_theme
+        self.setStyleSheet(qss_for(next_theme))
+
+        if hasattr(self.main, "apply_theme"):
+            self.main.apply_theme(next_theme)
+
+    def _user_settings_path(self):
+        return os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "user_settings.json")
+        )
+
+    def _load_user_settings(self):
+        path = self._user_settings_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            print(f"[Settings] Failed to load user settings: {exc}")
+            return {}
+
+    def _save_user_settings(self, settings):
+        path = self._user_settings_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=4, ensure_ascii=False)
+        except Exception as exc:
+            print(f"[Settings] Failed to save user settings: {exc}")
+
+    def _theme_for_user(self, username):
+        settings = self._load_user_settings()
+        themes = settings.get("themes_by_user", {})
+        if not isinstance(themes, dict):
+            themes = {}
+
+        theme_name = themes.get(username, "light")
+        if theme_name not in ("light", "dark"):
+            theme_name = "light"
+        return Theme(theme_name)
+
+    def _save_theme_for_user(self, username, theme_name):
+        settings = self._load_user_settings()
+        themes = settings.get("themes_by_user", {})
+        if not isinstance(themes, dict):
+            themes = {}
+
+        themes[username] = theme_name if theme_name in ("light", "dark") else "light"
+        settings["themes_by_user"] = themes
+        self._save_user_settings(settings)
 
 class StudentShell(QWidget):
     # Placeholder quotes - replace the strings below with your 5 short nursing quotes
@@ -113,6 +175,10 @@ class StudentShell(QWidget):
         self.user = user
         self.on_logout = on_logout
         self.on_toggle_theme = on_toggle_theme
+        self.theme_name = "light"
+        self.student_heading_font = "Bahnschrift"
+        self.student_body_font = "Candara"
+        self.student_mono_font = "Cascadia Mono"
 
         # --- click sound (default) ---
         self.click_sfx = QSoundEffect()
@@ -187,20 +253,16 @@ class StudentShell(QWidget):
         except Exception:
             pass
 
-        # Top bar (white translucent strip)
-        top = QFrame()
-        top.setObjectName("TopBar")
-        top.setStyleSheet("background: rgba(255,255,255,0.6); border: none; border-radius: 12px;")
-        top_l = QHBoxLayout(top)
+        # Top bar (themed translucent strip)
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("TopBar")
+        top_l = QHBoxLayout(self.top_bar)
         top_l.setContentsMargins(14, 10, 14, 10)
         top_l.setSpacing(10)
 
-        left_title = QLabel(f"Simulation Training for Epidural Analgesia Nursing Care")
-        left_title.setObjectName("Header")
-        # enforce font, size and color via stylesheet to override theme QSS
-        left_title.setStyleSheet("color: #003366; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 25px; font-weight: 700; background: transparent; border: none; padding: 0;")
-
-        top_l.addWidget(left_title)
+        self.left_title = QLabel("Simulation Training for Epidural Analgesia Nursing Care")
+        self.left_title.setObjectName("Header")
+        top_l.addWidget(self.left_title)
         top_l.addStretch(1)
 
         # Language selector temporarily disabled
@@ -254,28 +316,20 @@ class StudentShell(QWidget):
                 background: rgba(0,0,0,0.08);
             }
         """
-        for w in top.findChildren(QPushButton):
+        self.top_buttons = self.top_bar.findChildren(QPushButton)
+        for w in self.top_buttons:
             w.setStyleSheet(btn_style)
 
-        # Apply main shell handwritten font + color globally
-        try:
-            existing = self.styleSheet() or ""
-            existing += f"\n#{self.objectName()} {{ font-family: 'Segoe Script', cursive; color: #003366; }}"
-            self.setStyleSheet(existing)
-        except Exception:
-            pass
-
-        root.addWidget(top)
+        root.addWidget(self.top_bar)
 
         # Body: left menu + content
         body = QHBoxLayout()
         body.setSpacing(12)
 
         # Left menu
-        menu = QFrame()
-        menu.setObjectName("Card")
-        menu.setStyleSheet("background: rgba(255,255,255,0.85);")
-        menu_l = QVBoxLayout(menu)
+        self.menu_panel = QFrame()
+        self.menu_panel.setObjectName("Card")
+        menu_l = QVBoxLayout(self.menu_panel)
         menu_l.setContentsMargins(10, 10, 10, 10)
         menu_l.setSpacing(8)
 
@@ -306,11 +360,10 @@ class StudentShell(QWidget):
         # Start with Welcome selected (index 0)
         self.menu_list.setCurrentRow(0)
 
-        lbl_modules = QLabel("Modules")
-        lbl_modules.setObjectName("ModulesLabel")
-        lbl_modules.setFont(QFont('Segoe Print', 22, QFont.Bold))
-        lbl_modules.setStyleSheet("color: #003366; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 26px; font-weight: 700;")
-        menu_l.addWidget(lbl_modules)
+        self.modules_label = QLabel("Modules")
+        self.modules_label.setObjectName("ModulesLabel")
+        self.modules_label.setFont(QFont(self.student_heading_font, 22, QFont.Bold))
+        menu_l.addWidget(self.modules_label)
 
         # menu list style: transparent bg; items styled as button-like with selection state using Segoe Print
         self.menu_list.setStyleSheet("""
@@ -321,22 +374,12 @@ class StudentShell(QWidget):
         self.menu_list.setSelectionMode(QListWidget.SingleSelection)
         menu_l.addWidget(self.menu_list)
 
-        # ensure StudentShell-local override for Modules label so theme can't override it
-        try:
-            existing = self.styleSheet() or ""
-            existing += f"\n#{self.objectName()} QLabel#ModulesLabel {{ font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 28px; font-weight:700; color: #003366; }}"
-            self.setStyleSheet(existing)
-        except Exception:
-            pass
-
-        menu.setFixedWidth(260)
-        body.addWidget(menu)
+        self.menu_panel.setFixedWidth(260)
+        body.addWidget(self.menu_panel)
 
         # Content area
         self.content = QFrame()
         self.content.setObjectName("Card")
-        # keep the content slightly translucent to show background image (less transparent now)
-        self.content.setStyleSheet("background: rgba(255,255,255,0.8);")
         content_l = QVBoxLayout(self.content)
         content_l.setContentsMargins(18, 18, 18, 18)
         content_l.setSpacing(12)
@@ -344,25 +387,20 @@ class StudentShell(QWidget):
         self.content_title = QLabel("")
         self.content_title.setObjectName("Header")
         self.content_title.setFont(QFont('Segoe Print', 28, QFont.Bold))
-        # enforce font-family & size via stylesheet so it is not overridden by theme QSS
-        self.content_title.setStyleSheet("color: #003366; background: transparent; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 30px; font-weight:700;")
         self.content_title.setVisible(False)
 
         self.content_view = QLabel("")
         self.content_view.setAlignment(Qt.AlignCenter)
         self.content_view.setWordWrap(True)
-        self.content_view.setStyleSheet("QLabel{font-size:18px;opacity:0.95; font-family: 'Segoe Print', 'Segoe UI', Arial; color:#003366; background: transparent;}")
         self.content_view.setVisible(False)
 
         # quote label centered and larger (kept for generic use)
         self.quote_label = QLabel("")
-        self.quote_label.setStyleSheet("font-family: 'Segoe Print', 'Brush Script MT', cursive; color:#234f8d; font-size:32px; background: transparent;")
         self.quote_label.setAlignment(Qt.AlignCenter)
         self.quote_label.setWordWrap(True)
 
         # welcome_quote: larger, placed center-right of bottom area; visible on Welcome
         self.welcome_quote = QLabel("")
-        self.welcome_quote.setStyleSheet("font-family: 'Segoe Print', 'Brush Script MT', cursive; color:#234f8d; font-size:26px; background: transparent;")
         self.welcome_quote.setWordWrap(True)
         self.welcome_quote.setAlignment(Qt.AlignCenter)
         self.welcome_quote.setVisible(False)  # will be shown when Welcome is selected
@@ -377,6 +415,7 @@ class StudentShell(QWidget):
 
         body.addWidget(self.content, stretch=1)
         root.addLayout(body, stretch=1)
+        self.apply_theme(Theme(self.theme_name))
 
         # default content: trigger welcome on startup (delayed to avoid accessing incomplete objects)
         # Use QTimer to defer the call until after initialization completes
@@ -475,7 +514,8 @@ class StudentShell(QWidget):
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
-                    font_name = settings.get("font", "Segoe Print")
+                    font_name = settings.get("font", self.student_body_font)
+                    self.student_body_font = font_name or self.student_body_font
                     print(f"[Settings] Loaded user font: {font_name}")
                     
                     # Apply font to entire StudentShell
@@ -508,8 +548,173 @@ class StudentShell(QWidget):
     def _apply_font_globally(self, font_name):
         """Apply selected font to all UI elements in StudentShell"""
         print(f"[Settings] Applying font to StudentShell: {font_name}")
+        self.student_body_font = font_name or self.student_body_font
         self._apply_font_recursively(self, font_name)
+        self.apply_theme(Theme(self.theme_name))
         print(f"[Settings] Font applied successfully")
+
+    def _student_theme_tokens(self):
+        if self.theme_name == "dark":
+            return {
+                "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #071923, stop:0.55 #0d2631, stop:1 #153c45)",
+                "panel": "rgba(10, 31, 42, 0.88)",
+                "panel_soft": "rgba(16, 46, 58, 0.74)",
+                "card": "rgba(16, 51, 63, 0.82)",
+                "card_hover": "rgba(22, 70, 84, 0.92)",
+                "text": "#e8fbff",
+                "muted": "#9dc6cd",
+                "accent": "#42d6c5",
+                "accent_deep": "#18a999",
+                "accent_soft": "rgba(66, 214, 197, 0.18)",
+                "border": "rgba(119, 232, 219, 0.26)",
+                "shadow": "rgba(0, 0, 0, 0.28)",
+            }
+        return {
+            "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eef8f7, stop:0.55 #f8fbff, stop:1 #eaf2ff)",
+            "panel": "rgba(255, 255, 255, 0.84)",
+            "panel_soft": "rgba(255, 255, 255, 0.68)",
+            "card": "rgba(255, 255, 255, 0.78)",
+            "card_hover": "rgba(240, 250, 255, 0.92)",
+            "text": "#12354a",
+            "muted": "#557382",
+            "accent": "#207d88",
+            "accent_deep": "#115e67",
+            "accent_soft": "rgba(32, 125, 136, 0.13)",
+            "border": "rgba(32, 125, 136, 0.20)",
+            "shadow": "rgba(32, 72, 96, 0.10)",
+        }
+
+    def apply_theme(self, theme):
+        """Apply a coordinated theme to the student shell and dynamic pages."""
+        self.theme_name = getattr(theme, "name", "light")
+        palette = self._student_theme_tokens()
+        heading = self.student_heading_font
+        body = self.student_body_font
+
+        self.setStyleSheet(
+            f"""
+            QWidget#StudentShell {{
+                background: {palette['shell_bg']};
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
+            }}
+            QFrame#TopBar, QFrame#Card {{
+                background: {palette['panel']};
+                border: 1px solid {palette['border']};
+                border-radius: 18px;
+            }}
+            QLabel#Header {{
+                color: {palette['text']};
+                font-family: '{heading}', '{body}', 'Segoe UI', Arial;
+                font-weight: 800;
+            }}
+            QLabel#ModulesLabel {{
+                color: {palette['text']};
+                font-family: '{heading}', '{body}', 'Segoe UI', Arial;
+                font-size: 28px;
+                font-weight: 800;
+            }}
+            """
+        )
+
+        if getattr(self, "bg", None):
+            self.bg.setVisible(self.theme_name == "light")
+
+        if hasattr(self, "top_bar"):
+            self.top_bar.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 18px;"
+            )
+        if hasattr(self, "menu_panel"):
+            self.menu_panel.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 18px;"
+            )
+        if hasattr(self, "content"):
+            self.content.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 20px;"
+            )
+        if hasattr(self, "left_title"):
+            self.left_title.setStyleSheet(
+                f"color: {palette['text']}; font-family: '{heading}', '{body}', 'Segoe UI', Arial; "
+                f"font-size: 24px; font-weight: 800; background: transparent; border: none; padding: 0;"
+            )
+        if hasattr(self, "modules_label"):
+            self.modules_label.setStyleSheet(
+                f"color: {palette['text']}; font-family: '{heading}', '{body}', 'Segoe UI', Arial; "
+                f"font-size: 27px; font-weight: 800; background: transparent; border: none;"
+            )
+        if hasattr(self, "menu_list"):
+            self.menu_list.setStyleSheet(
+                f"""
+                QListWidget {{
+                    border: 0px;
+                    background: transparent;
+                    outline: none;
+                }}
+                QListWidget::item {{
+                    padding: 14px;
+                    border-radius: 12px;
+                    color: {palette['muted']};
+                    font-family: '{body}', 'Segoe UI', Arial;
+                    font-size: 18px;
+                }}
+                QListWidget::item:hover {{
+                    background: {palette['accent_soft']};
+                    color: {palette['text']};
+                }}
+                QListWidget::item:selected {{
+                    background: {palette['accent_soft']};
+                    border-left: 4px solid {palette['accent']};
+                    color: {palette['text']};
+                    font-weight: 800;
+                }}
+                """
+            )
+        if hasattr(self, "content_title"):
+            self.content_title.setStyleSheet(
+                f"color: {palette['text']}; background: transparent; "
+                f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 30px; font-weight: 800;"
+            )
+        if hasattr(self, "content_view"):
+            self.content_view.setStyleSheet(
+                f"QLabel {{ font-size: 18px; font-family: '{body}', 'Segoe UI', Arial; "
+                f"color: {palette['muted']}; background: transparent; }}"
+            )
+        if hasattr(self, "quote_label"):
+            self.quote_label.setStyleSheet(
+                f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; color: {palette['accent']}; "
+                f"font-size: 30px; background: transparent;"
+            )
+        if hasattr(self, "welcome_quote"):
+            self.welcome_quote.setStyleSheet(
+                f"font-family: '{body}', 'Segoe UI', Arial; color: {palette['muted']}; "
+                f"font-size: 22px; background: transparent;"
+            )
+        if hasattr(self, "top_buttons"):
+            button_style = self._student_top_button_style(palette)
+            for button in self.top_buttons:
+                button.setStyleSheet(button_style)
+
+        if hasattr(self, "student_home_container") and self.student_home_container:
+            self._show_student_home()
+
+    def _student_top_button_style(self, palette=None):
+        palette = palette or self._student_theme_tokens()
+        return f"""
+            QPushButton {{
+                background: {palette['panel_soft']};
+                border: 1px solid {palette['border']};
+                padding: 7px 12px;
+                border-radius: 10px;
+                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
+                font-size: 14px;
+                font-weight: 700;
+                color: {palette['text']};
+            }}
+            QPushButton:hover {{
+                background: {palette['accent_soft']};
+                border-color: {palette['accent']};
+            }}
+        """
     
     def start_welcome(self):
         # Play music (if available)
@@ -833,9 +1038,16 @@ class StudentShell(QWidget):
         layout.setSpacing(14)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        palette = self._student_theme_tokens()
+        heading = self.student_heading_font
+        body = self.student_body_font
+
         greeting = QLabel(f"Welcome, {self.user.username}. Choose a training task or review your latest progress.")
         greeting.setWordWrap(True)
-        greeting.setStyleSheet("font-family: 'Segoe Print'; font-size: 17px; color: #234f8d; font-weight: 600;")
+        greeting.setStyleSheet(
+            f"font-family: '{body}', 'Segoe UI', Arial; font-size: 17px; "
+            f"color: {palette['muted']}; font-weight: 700; background: transparent;"
+        )
         layout.addWidget(greeting)
 
         stats = self._get_student_training_stats()
@@ -865,22 +1077,25 @@ class StudentShell(QWidget):
         layout.addLayout(actions)
 
         recent_title = QLabel("Recent Training")
-        recent_title.setStyleSheet("font-family: 'Segoe Print'; font-size: 18px; color: #003366; font-weight: 700;")
+        recent_title.setStyleSheet(
+            f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
+            f"color: {palette['text']}; font-weight: 800; background: transparent;"
+        )
         layout.addWidget(recent_title)
 
         recent = QTextEdit()
         recent.setReadOnly(True)
         recent.setMaximumHeight(160)
-        recent.setStyleSheet("""
-            QTextEdit {
-                background: rgba(255, 255, 255, 0.45);
-                border: 2px solid rgba(77, 163, 255, 0.25);
-                border-radius: 10px;
+        recent.setStyleSheet(f"""
+            QTextEdit {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 14px;
                 padding: 10px;
-                color: #003366;
-                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
                 font-size: 13px;
-            }
+            }}
         """)
         recent.setText(self._student_recent_training_text(stats["summaries"]))
         layout.addWidget(recent)
@@ -888,7 +1103,10 @@ class StudentShell(QWidget):
         ai_header = QHBoxLayout()
         ai_header.setSpacing(8)
         ai_title = QLabel("AI Training Summary")
-        ai_title.setStyleSheet("font-family: 'Segoe Print'; font-size: 18px; color: #003366; font-weight: 700;")
+        ai_title.setStyleSheet(
+            f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
+            f"color: {palette['text']}; font-weight: 800; background: transparent;"
+        )
         ai_header.addWidget(ai_title)
         ai_header.addStretch(1)
         layout.addLayout(ai_header)
@@ -896,16 +1114,16 @@ class StudentShell(QWidget):
         self.student_ai_summary = QTextEdit()
         self.student_ai_summary.setReadOnly(True)
         self.student_ai_summary.setMaximumHeight(190)
-        self.student_ai_summary.setStyleSheet("""
-            QTextEdit {
-                background: rgba(255, 255, 255, 0.45);
-                border: 2px solid rgba(77, 163, 255, 0.25);
-                border-radius: 10px;
+        self.student_ai_summary.setStyleSheet(f"""
+            QTextEdit {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 14px;
                 padding: 10px;
-                color: #003366;
-                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
                 font-size: 13px;
-            }
+            }}
         """)
         self.student_ai_summary.setText(
             "After training, a summary is generated automatically. You can also click Generate AI Summary above."
@@ -917,21 +1135,28 @@ class StudentShell(QWidget):
         self.student_home_container.setVisible(True)
 
     def _student_metric_card(self, label, value):
+        palette = self._student_theme_tokens()
         card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background: rgba(255, 255, 255, 0.42);
-                border: 2px solid rgba(77, 163, 255, 0.25);
-                border-radius: 10px;
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 16px;
                 padding: 10px;
-            }
+            }}
         """)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 8, 10, 8)
         value_label = QLabel(value)
-        value_label.setStyleSheet("font-size: 24px; color: #003366; font-weight: 800; background: transparent; border: none;")
+        value_label.setStyleSheet(
+            f"font-family: '{self.student_heading_font}', '{self.student_body_font}', 'Segoe UI', Arial; "
+            f"font-size: 25px; color: {palette['text']}; font-weight: 800; background: transparent; border: none;"
+        )
         label_label = QLabel(label)
-        label_label.setStyleSheet("font-size: 13px; color: #234f8d; font-weight: 650; background: transparent; border: none;")
+        label_label.setStyleSheet(
+            f"font-family: '{self.student_body_font}', 'Segoe UI', Arial; font-size: 13px; "
+            f"color: {palette['muted']}; font-weight: 700; background: transparent; border: none;"
+        )
         layout.addWidget(value_label)
         layout.addWidget(label_label)
         return card
@@ -943,22 +1168,23 @@ class StudentShell(QWidget):
         return button
 
     def _student_action_button_style(self):
-        return """
-            QPushButton {
-                background: rgba(77, 163, 255, 0.24);
-                border: 2px solid #4DA3FF;
-                border-radius: 10px;
+        palette = self._student_theme_tokens()
+        return f"""
+            QPushButton {{
+                background: {palette['accent_soft']};
+                border: 1px solid {palette['accent']};
+                border-radius: 16px;
                 padding: 16px;
-                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-family: '{self.student_heading_font}', '{self.student_body_font}', 'Segoe UI', Arial;
                 font-size: 16px;
-                font-weight: 700;
-                color: #003366;
+                font-weight: 800;
+                color: {palette['text']};
                 min-height: 78px;
-            }
-            QPushButton:hover {
-                background: rgba(77, 163, 255, 0.34);
-                border-color: #234f8d;
-            }
+            }}
+            QPushButton:hover {{
+                background: {palette['card_hover']};
+                border-color: {palette['accent_deep']};
+            }}
         """
 
     def _get_student_training_stats(self):

@@ -10,5 +10,6 @@ __pycache__/
 .vscode/launch.json
 .vscode/ipch
 .vscode/settings.json
+/data/
 data/debug/
 models/*.task

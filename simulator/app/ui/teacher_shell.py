@@ -42,6 +42,7 @@ class TeacherShell(QWidget):
         self.student_rows = []
         self.records_by_user = {}
         self.selected_student = None
+        self.theme_name = "light"
 
         self._build_ui()
         self.refresh_data()
@@ -444,6 +445,146 @@ class TeacherShell(QWidget):
         layout.addWidget(label_label)
         parent_layout.addWidget(card)
         return value_label
+
+    def _teacher_theme_tokens(self):
+        if self.theme_name == "dark":
+            return {
+                "shell_bg": "#071c17",
+                "panel": "rgba(15, 43, 36, 0.92)",
+                "panel_soft": "rgba(22, 59, 50, 0.78)",
+                "text": "#eafdf5",
+                "muted": "#9bc7b8",
+                "accent": "#63d6a8",
+                "accent_deep": "#37b784",
+                "accent_soft": "rgba(99, 214, 168, 0.16)",
+                "border": "rgba(126, 229, 188, 0.24)",
+                "header": "#163f35",
+            }
+        return {
+            "shell_bg": "#eef6f1",
+            "panel": "rgba(255, 255, 255, 0.88)",
+            "panel_soft": "rgba(255, 255, 255, 0.74)",
+            "text": "#173b2f",
+            "muted": "#4c6b60",
+            "accent": "#1f7a5c",
+            "accent_deep": "#17664c",
+            "accent_soft": "rgba(31, 122, 92, 0.14)",
+            "border": "rgba(32, 92, 72, 0.14)",
+            "header": "#d9eee5",
+        }
+
+    def apply_theme(self, theme):
+        self.theme_name = getattr(theme, "name", "light")
+        palette = self._teacher_theme_tokens()
+        self.setStyleSheet(
+            f"""
+            QWidget#TeacherShell {{
+                background: {palette['shell_bg']};
+                color: {palette['text']};
+                font-family: 'Aptos', 'Segoe UI', Arial;
+            }}
+            QFrame#TeacherTopBar, QFrame#TeacherCard, QFrame#TeacherMenu {{
+                background: {palette['panel']};
+                border: 1px solid {palette['border']};
+                border-radius: 16px;
+            }}
+            QLabel#TeacherTitle {{
+                color: {palette['text']};
+                font-size: 28px;
+                font-weight: 800;
+            }}
+            QLabel#TeacherSubtitle {{
+                color: {palette['muted']};
+                font-size: 13px;
+            }}
+            QLabel#CardValue {{
+                color: {palette['accent']};
+                font-size: 28px;
+                font-weight: 800;
+            }}
+            QLabel#CardLabel {{
+                color: {palette['muted']};
+                font-size: 13px;
+                font-weight: 650;
+            }}
+            QPushButton {{
+                background: {palette['accent']};
+                color: white;
+                border: none;
+                border-radius: 10px;
+                padding: 8px 14px;
+                font-weight: 750;
+            }}
+            QPushButton:hover {{
+                background: {palette['accent_deep']};
+            }}
+            QPushButton:disabled {{
+                background: {palette['muted']};
+            }}
+            QListWidget {{
+                border: none;
+                background: transparent;
+                outline: none;
+            }}
+            QListWidget::item {{
+                padding: 13px 12px;
+                border-radius: 11px;
+                color: {palette['text']};
+                font-size: 15px;
+                font-weight: 650;
+            }}
+            QListWidget::item:hover {{
+                background: {palette['accent_soft']};
+            }}
+            QListWidget::item:selected {{
+                background: {palette['accent_soft']};
+                border-left: 4px solid {palette['accent']};
+                color: {palette['text']};
+            }}
+            QTableWidget {{
+                background: {palette['panel_soft']};
+                border: 1px solid {palette['border']};
+                border-radius: 12px;
+                gridline-color: {palette['border']};
+                color: {palette['text']};
+            }}
+            QHeaderView::section {{
+                background: {palette['header']};
+                color: {palette['text']};
+                border: none;
+                padding: 8px;
+                font-weight: 800;
+            }}
+            QTextEdit {{
+                background: {palette['panel_soft']};
+                border: 1px solid {palette['border']};
+                border-radius: 12px;
+                padding: 10px;
+                color: {palette['text']};
+            }}
+            """
+        )
+
+        if hasattr(self, "teacher_ai_btn"):
+            self.teacher_ai_btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background: {palette['accent']};
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    padding: 10px 18px;
+                    font-size: 15px;
+                    font-weight: 800;
+                }}
+                QPushButton:hover {{
+                    background: {palette['accent_deep']};
+                }}
+                QPushButton:disabled {{
+                    background: {palette['muted']};
+                }}
+                """
+            )
 
     def refresh_data(self):
         self.student_rows = self._collect_student_rows()
