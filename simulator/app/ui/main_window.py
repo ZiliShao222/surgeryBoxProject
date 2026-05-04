@@ -58,13 +58,18 @@ class App(QMainWindow):
     def _on_login(self, user):
         write_profile_if_missing(user.username, user.role)
 
-        # When logged in, initialize main shell and start welcome behavior
-        self.main = MainShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        # Route to a role-specific shell after login.
+        if user.role == "trainer":
+            from app.ui.teacher_shell import TeacherShell
+            self.main = TeacherShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        else:
+            self.main = StudentShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
         self.stack.addWidget(self.main)
         self.stack.setCurrentWidget(self.main)
 
-        # Start welcome behaviors (music & quote)
-        self.main.start_welcome()
+        # Start welcome behaviors when the shell supports them.
+        if hasattr(self.main, "start_welcome"):
+            self.main.start_welcome()
 
 
     def _logout(self):
@@ -91,7 +96,7 @@ class App(QMainWindow):
         self.theme = Theme("dark" if self.theme.name == "light" else "light")
         self.setStyleSheet(qss_for(self.theme))
 
-class MainShell(QWidget):
+class StudentShell(QWidget):
     # Placeholder quotes - replace the strings below with your 5 short nursing quotes
     QUOTES = [
         "The most important practical lesson that can be given to nurses is to teach them what to observe.",
@@ -104,7 +109,7 @@ class MainShell(QWidget):
     def __init__(self, user, on_logout, on_toggle_theme, parent=None):
         super().__init__(parent)
         # identify root widget for specific stylesheet overrides
-        self.setObjectName("MainShell")
+        self.setObjectName("StudentShell")
         self.user = user
         self.on_logout = on_logout
         self.on_toggle_theme = on_toggle_theme
@@ -288,8 +293,7 @@ class MainShell(QWidget):
             ("AI Nursing Mentor", "ai_mentor"),  # 新增AI对话菜单
             # ("Report Records", "reports"),
         ]
-        if self.user.role == "trainer":
-            items.append(("Trainer Dashboard", "dashboard"))
+        # Teacher-only modules live in TeacherShell; the student shell stays training-focused.
 
         for text, key in items:
             it = QListWidgetItem(text)
@@ -317,7 +321,7 @@ class MainShell(QWidget):
         self.menu_list.setSelectionMode(QListWidget.SingleSelection)
         menu_l.addWidget(self.menu_list)
 
-        # ensure MainShell-local override for Modules label so theme can't override it
+        # ensure StudentShell-local override for Modules label so theme can't override it
         try:
             existing = self.styleSheet() or ""
             existing += f"\n#{self.objectName()} QLabel#ModulesLabel {{ font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 28px; font-weight:700; color: #003366; }}"
@@ -474,7 +478,7 @@ class MainShell(QWidget):
                     font_name = settings.get("font", "Segoe Print")
                     print(f"[Settings] Loaded user font: {font_name}")
                     
-                    # Apply font to entire MainShell
+                    # Apply font to entire StudentShell
                     self._apply_font_recursively(self, font_name)
         except Exception as e:
             print(f"[Settings] Error loading user font: {e}")
@@ -502,8 +506,8 @@ class MainShell(QWidget):
             child.setFont(new_font)
     
     def _apply_font_globally(self, font_name):
-        """Apply selected font to all UI elements in MainShell"""
-        print(f"[Settings] Applying font to MainShell: {font_name}")
+        """Apply selected font to all UI elements in StudentShell"""
+        print(f"[Settings] Applying font to StudentShell: {font_name}")
         self._apply_font_recursively(self, font_name)
         print(f"[Settings] Font applied successfully")
     
