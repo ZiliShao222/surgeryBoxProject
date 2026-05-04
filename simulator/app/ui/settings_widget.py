@@ -21,16 +21,17 @@ class SettingsWidget(QFrame):
         
         # Font options: (display_name, font_family)
         self.font_options = [
-            ("Default (Candara)", "Candara"),
-            ("Strong Headings (Bahnschrift)", "Bahnschrift"),
+            ("Default (Aptos)", "Aptos"),
             ("Classic UI (Segoe UI)", "Segoe UI"),
+            ("Soft Rounded (Candara)", "Candara"),
+            ("Strong Headings (Bahnschrift)", "Bahnschrift"),
             ("Handwritten (Segoe Print)", "Segoe Print"),
             ("Times New Roman", "Times New Roman"),
             ("Microsoft YaHei (微软雅黑)", "Microsoft YaHei"),
         ]
         
         self.config_path = os.path.join(os.path.dirname(__file__), "..", "..", "user_settings.json")
-        self.current_font = "Candara"
+        self.current_font = "Aptos"
         
         self._setup_ui()
         self._load_settings()
@@ -148,7 +149,7 @@ class SettingsWidget(QFrame):
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
-                    self.current_font = settings.get("font", "Candara")
+                    self.current_font = settings.get("font", "Aptos")
                     
                     # Set combo box to the loaded font
                     for i, (display_name, font_family) in enumerate(self.font_options):

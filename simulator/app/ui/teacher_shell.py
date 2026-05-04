@@ -43,6 +43,7 @@ class TeacherShell(QWidget):
         self.records_by_user = {}
         self.selected_student = None
         self.theme_name = "light"
+        self.theme_names = ("light", "dark")
 
         self._build_ui()
         self.refresh_data()

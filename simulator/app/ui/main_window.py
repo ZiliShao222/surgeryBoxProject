@@ -66,7 +66,7 @@ class App(QMainWindow):
             self.main = TeacherShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
         else:
             self.main = StudentShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
-        account_theme = self._theme_for_user(user.username)
+        account_theme = self._theme_for_user(user.username, user.role)
         self.theme = account_theme
         self.setStyleSheet(qss_for(account_theme))
         if hasattr(self.main, "apply_theme"):
@@ -106,8 +106,14 @@ class App(QMainWindow):
             return
 
         username = self.main.user.username
-        current = self._theme_for_user(username)
-        next_theme = Theme("dark" if current.name == "light" else "light")
+        role = self.main.user.role
+        theme_names = getattr(self.main, "theme_names", ("light", "dark"))
+        current = self._theme_for_user(username, role)
+        try:
+            current_index = theme_names.index(current.name)
+        except ValueError:
+            current_index = 0
+        next_theme = Theme(theme_names[(current_index + 1) % len(theme_names)])
         self._save_theme_for_user(username, next_theme.name)
         self.theme = next_theme
         self.setStyleSheet(qss_for(next_theme))
@@ -141,15 +147,19 @@ class App(QMainWindow):
         except Exception as exc:
             print(f"[Settings] Failed to save user settings: {exc}")
 
-    def _theme_for_user(self, username):
+    def _default_theme_name_for_role(self, role):
+        return "student_blue" if role == "trainee" else "light"
+
+    def _theme_for_user(self, username, role=None):
         settings = self._load_user_settings()
         themes = settings.get("themes_by_user", {})
         if not isinstance(themes, dict):
             themes = {}
 
-        theme_name = themes.get(username, "light")
-        if theme_name not in ("light", "dark"):
-            theme_name = "light"
+        default_theme = self._default_theme_name_for_role(role)
+        theme_name = themes.get(username, default_theme)
+        if theme_name not in ("student_blue", "light", "dark"):
+            theme_name = default_theme
         return Theme(theme_name)
 
     def _save_theme_for_user(self, username, theme_name):
@@ -158,7 +168,7 @@ class App(QMainWindow):
         if not isinstance(themes, dict):
             themes = {}
 
-        themes[username] = theme_name if theme_name in ("light", "dark") else "light"
+        themes[username] = theme_name if theme_name in ("student_blue", "light", "dark") else "light"
         settings["themes_by_user"] = themes
         self._save_user_settings(settings)
 
@@ -179,9 +189,10 @@ class StudentShell(QWidget):
         self.user = user
         self.on_logout = on_logout
         self.on_toggle_theme = on_toggle_theme
-        self.theme_name = "light"
-        self.student_heading_font = "Bahnschrift"
-        self.student_body_font = "Candara"
+        self.theme_name = "student_blue"
+        self.theme_names = ("student_blue", "light", "dark")
+        self.student_heading_font = "Aptos"
+        self.student_body_font = "Aptos"
         self.student_mono_font = "Cascadia Mono"
 
         # --- click sound (default) ---
@@ -524,6 +535,8 @@ class StudentShell(QWidget):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
                     font_name = settings.get("font", self.student_body_font)
+                    if font_name == "Candara":
+                        font_name = self.student_body_font
                     self.student_body_font = font_name or self.student_body_font
                     print(f"[Settings] Loaded user font: {font_name}")
                     
@@ -578,19 +591,34 @@ class StudentShell(QWidget):
                 "border": "rgba(119, 232, 219, 0.26)",
                 "shadow": "rgba(0, 0, 0, 0.28)",
             }
+        if self.theme_name == "light":
+            return {
+                "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eef8f7, stop:0.55 #f8fbff, stop:1 #eaf2ff)",
+                "panel": "rgba(255, 255, 255, 0.84)",
+                "panel_soft": "rgba(255, 255, 255, 0.68)",
+                "card": "rgba(255, 255, 255, 0.78)",
+                "card_hover": "rgba(240, 250, 255, 0.92)",
+                "text": "#12354a",
+                "muted": "#557382",
+                "accent": "#207d88",
+                "accent_deep": "#115e67",
+                "accent_soft": "rgba(32, 125, 136, 0.13)",
+                "border": "rgba(32, 125, 136, 0.20)",
+                "shadow": "rgba(32, 72, 96, 0.10)",
+            }
         return {
-            "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eef8f7, stop:0.55 #f8fbff, stop:1 #eaf2ff)",
-            "panel": "rgba(255, 255, 255, 0.84)",
-            "panel_soft": "rgba(255, 255, 255, 0.68)",
-            "card": "rgba(255, 255, 255, 0.78)",
-            "card_hover": "rgba(240, 250, 255, 0.92)",
-            "text": "#12354a",
-            "muted": "#557382",
-            "accent": "#207d88",
-            "accent_deep": "#115e67",
-            "accent_soft": "rgba(32, 125, 136, 0.13)",
-            "border": "rgba(32, 125, 136, 0.20)",
-            "shadow": "rgba(32, 72, 96, 0.10)",
+            "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eaf6ff, stop:0.48 #f7fbff, stop:1 #dcecff)",
+            "panel": "rgba(248, 252, 255, 0.88)",
+            "panel_soft": "rgba(235, 246, 255, 0.78)",
+            "card": "rgba(255, 255, 255, 0.82)",
+            "card_hover": "rgba(230, 244, 255, 0.96)",
+            "text": "#15354f",
+            "muted": "#58758d",
+            "accent": "#3f8fcf",
+            "accent_deep": "#246fa8",
+            "accent_soft": "rgba(63, 143, 207, 0.15)",
+            "border": "rgba(64, 139, 198, 0.22)",
+            "shadow": "rgba(44, 96, 140, 0.12)",
         }
 
     def apply_theme(self, theme):
