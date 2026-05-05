@@ -736,7 +736,13 @@ class StudentShell(QWidget):
             for button in self.top_buttons:
                 button.setStyleSheet(button_style)
 
-        if hasattr(self, "student_home_container") and self.student_home_container:
+        current_key = None
+        if hasattr(self, "menu_list"):
+            current_item = self.menu_list.currentItem()
+            if current_item:
+                current_key = current_item.data(Qt.UserRole)
+
+        if current_key == "welcome" and hasattr(self, "student_home_container") and self.student_home_container:
             self._show_student_home()
 
     def _student_top_button_style(self, palette=None):
