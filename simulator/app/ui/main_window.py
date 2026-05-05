@@ -24,6 +24,7 @@ except Exception:
 import os
 import random
 import json
+import re
 
 from app.config import APP_NAME, APP_VERSION
 from app.ui.login_page import LoginPage
@@ -744,6 +745,13 @@ class StudentShell(QWidget):
 
         if current_key == "welcome" and hasattr(self, "student_home_container") and self.student_home_container:
             self._show_student_home()
+        self._refresh_student_inline_text_colors()
+        if hasattr(self, "practice_records_container") and not self.practice_records_container.isHidden():
+            self._update_practice_statistics()
+            self._refresh_student_inline_text_colors()
+        if hasattr(self, "training_records_container") and not self.training_records_container.isHidden():
+            self._update_training_records()
+            self._refresh_student_inline_text_colors()
 
     def _student_top_button_style(self, palette=None):
         palette = palette or self._student_theme_tokens()
@@ -763,6 +771,66 @@ class StudentShell(QWidget):
                 border-color: {palette['accent']};
             }}
         """
+
+    def _student_inline_text_targets(self):
+        """Return readable legacy text colors for inline styles on each student theme."""
+        if self.theme_name == "dark":
+            return self._student_theme_tokens()["text"], self._student_theme_tokens()["muted"]
+        return "#003366", "#234f8d"
+
+    def _replace_student_inline_text_colors(self, style):
+        """Retint only CSS text color values; leave content, borders, and layout untouched."""
+        if not style:
+            return style
+
+        primary, muted = self._student_inline_text_targets()
+        primary_sources = ("#003366", "#e8fbff")
+        muted_sources = ("#234f8d", "#9dc6cd")
+
+        for old in primary_sources:
+            style = re.sub(
+                rf"(?<![-\w])color\s*:\s*{re.escape(old)}",
+                f"color: {primary}",
+                style,
+                flags=re.IGNORECASE,
+            )
+        for old in muted_sources:
+            style = re.sub(
+                rf"(?<![-\w])color\s*:\s*{re.escape(old)}",
+                f"color: {muted}",
+                style,
+                flags=re.IGNORECASE,
+            )
+        return style
+
+    def _refresh_student_inline_text_colors(self):
+        """Refresh hard-coded legacy blue text on pages that already exist."""
+        containers = [
+            getattr(self, name, None)
+            for name in (
+                "elearning_container",
+                "learning_materials_container",
+                "practice_container",
+                "topic_container",
+                "practice_records_container",
+                "training_records_container",
+                "simulation_container",
+                "simulator_conn_widget",
+                "settings_container",
+                "ai_mentor_widget",
+                "_completion_frame",
+            )
+        ]
+
+        for container in containers:
+            if not container:
+                continue
+            for widget_type in (QLabel, QPushButton, QListWidget, QTextEdit):
+                for widget in container.findChildren(widget_type):
+                    old_style = widget.styleSheet()
+                    new_style = self._replace_student_inline_text_colors(old_style)
+                    if new_style != old_style:
+                        widget.setStyleSheet(new_style)
     
     def start_welcome(self):
         # Play music (if available)
@@ -1517,6 +1585,7 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.elearning_container)
         
         self.elearning_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _show_learning_materials(self):
         """Show learning materials from reading.md."""
@@ -1632,6 +1701,7 @@ class StudentShell(QWidget):
         self.txt_materials_content.verticalScrollBar().setValue(0)
         
         self.learning_materials_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _return_from_learning_materials(self):
         """Return from learning materials to elearning main view."""
@@ -2016,6 +2086,7 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.practice_container)
         
         self.practice_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _start_random_practice(self):
         """Start random practice with all questions shuffled."""
@@ -2156,6 +2227,7 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.topic_container)
         
         self.topic_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _start_topic_practice(self, topic_id):
         """Start topic-based practice."""
@@ -2327,6 +2399,7 @@ class StudentShell(QWidget):
         content_l.insertWidget(2, completion_frame)
         completion_frame.setVisible(True)
         completion_frame.raise_()
+        self._refresh_student_inline_text_colors()
     
     def _return_to_practice_options(self):
         """Return to practice menu."""
@@ -2411,6 +2484,7 @@ class StudentShell(QWidget):
         
         self.practice_records_container.setVisible(True)
         self._update_practice_statistics()
+        self._refresh_student_inline_text_colors()
 
     def _update_practice_statistics(self):
         """Update practice statistics from history file."""
@@ -2475,6 +2549,7 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(7, 2.8), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(recent_records) + 1))
@@ -2485,19 +2560,19 @@ class StudentShell(QWidget):
             # Plot - use matplotlib-compatible colors
             ax.plot(attempts, accuracies, marker='o', linestyle='-', linewidth=2.5, 
                    color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF', 
-                   markeredgecolor='#003366', markeredgewidth=2)
+                   markeredgecolor=chart_text_color, markeredgewidth=2)
             ax.fill_between(attempts, accuracies, alpha=0.25, color='#4DA3FF')
             
             # Styling - use hex colors and tuples instead of rgba()
-            ax.set_xlabel("Attempt", fontsize=12, color='#003366', weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=12, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=12, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=12, color=chart_text_color, weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(recent_records) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))  # Use tuple instead of rgba()
             
             # Set tick colors and labels
-            ax.tick_params(colors='#003366', labelsize=10)
+            ax.tick_params(colors=chart_text_color, labelsize=10)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2705,6 +2780,7 @@ class StudentShell(QWidget):
         
         self.training_records_container.setVisible(True)
         self._update_training_records()
+        self._refresh_student_inline_text_colors()
 
     def _update_training_records(self):
         """Update training records from storage with charts."""
@@ -2784,6 +2860,7 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(elapsed_times) + 1))
@@ -2791,18 +2868,18 @@ class StudentShell(QWidget):
             # Plot
             ax.plot(attempts, elapsed_times, marker='o', linestyle='-', linewidth=2.5,
                    color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF',
-                   markeredgecolor='#003366', markeredgewidth=2)
+                   markeredgecolor=chart_text_color, markeredgewidth=2)
             ax.fill_between(attempts, elapsed_times, alpha=0.25, color='#4DA3FF')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
-            ax.set_ylabel("Time (seconds)", fontsize=11, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Time (seconds)", fontsize=11, color=chart_text_color, weight='bold')
             ax.set_xlim(0.5, len(elapsed_times) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors='#003366', labelsize=9)
+            ax.tick_params(colors=chart_text_color, labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2835,6 +2912,7 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(accuracies) + 1))
@@ -2846,15 +2924,15 @@ class StudentShell(QWidget):
             ax.fill_between(attempts, accuracies, alpha=0.25, color='#00AA00')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=11, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=11, color=chart_text_color, weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(accuracies) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors='#003366', labelsize=9)
+            ax.tick_params(colors=chart_text_color, labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2950,6 +3028,7 @@ class StudentShell(QWidget):
             self.ai_mentor_widget.setVisible(True)
             self.content_title.setText("AI Nursing Mentor")
             self.content_title.setVisible(True)
+            self._refresh_student_inline_text_colors()
             
         except Exception as e:
             print(f"Error showing AI Mentor: {e}")
@@ -3065,6 +3144,7 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.simulation_container)
         
         self.simulation_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     def _hide_all_content_containers(self):
         """隐藏所有内容容器（Settings, Simulation, Practice, E-learning等）"""
         if hasattr(self, 'settings_container'):
@@ -3199,6 +3279,7 @@ class StudentShell(QWidget):
         
         # 默认显示摄像头设置
         self._show_camera_settings_tab()
+        self._refresh_student_inline_text_colors()
     
     def _show_camera_settings_tab(self):
         """显示摄像头设置标签"""
@@ -3243,6 +3324,7 @@ class StudentShell(QWidget):
         
         self.settings_content_layout.addWidget(self.camera_manager_widget)
         self.camera_manager_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _show_font_settings_tab(self):
         """显示字体设置标签"""
@@ -3288,6 +3370,7 @@ class StudentShell(QWidget):
         
         self.settings_content_layout.addWidget(self.settings_widget)
         self.settings_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _apply_font_globally(self, font_name):
         """Apply selected font to all UI elements"""
@@ -3464,6 +3547,7 @@ class StudentShell(QWidget):
         # Refresh serial hardware on display
         self._refresh_serial_display()
         self.simulator_conn_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
 
     def _refresh_serial_display(self):
         """Refresh the wired serial hardware status shown on the Simulator page."""
