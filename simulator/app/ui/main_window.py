@@ -736,12 +736,7 @@ class StudentShell(QWidget):
             for button in self.top_buttons:
                 button.setStyleSheet(button_style)
 
-        self._retint_student_dynamic_pages()
-        if (
-            hasattr(self, "student_home_container")
-            and self.student_home_container
-            and self.student_home_container.isVisible()
-        ):
+        if hasattr(self, "student_home_container") and self.student_home_container:
             self._show_student_home()
 
     def _student_top_button_style(self, palette=None):
@@ -762,236 +757,6 @@ class StudentShell(QWidget):
                 border-color: {palette['accent']};
             }}
         """
-
-    def _student_css_value(self, style, key, default=None):
-        """Read one CSS value from an existing inline stylesheet."""
-        marker = f"{key}:"
-        start = style.find(marker)
-        if start < 0:
-            return default
-        start += len(marker)
-        end = style.find(";", start)
-        if end < 0:
-            end = len(style)
-        value = style[start:end].strip()
-        return value or default
-
-    def _student_label_style(self, size="14px", weight="600", color_key="text", italic=False, panel=False):
-        palette = self._student_theme_tokens()
-        font_style = "font-style: italic;" if italic else ""
-        background = palette["accent_soft"] if panel else "transparent"
-        padding = "padding: 16px; border-radius: 10px;" if panel else ""
-        return (
-            f"font-family: '{self.student_body_font}', 'Segoe UI', Arial; "
-            f"font-size: {size}; font-weight: {weight}; color: {palette[color_key]}; "
-            f"background: {background}; border: none; {padding} {font_style}"
-        )
-
-    def _student_panel_style(self, padding=12):
-        palette = self._student_theme_tokens()
-        return (
-            f"background: {palette['panel_soft']}; border: 1px solid {palette['border']}; "
-            f"border-radius: 10px; padding: {padding}px;"
-        )
-
-    def _student_content_button_style(self, min_height=None, min_width=None, secondary=False):
-        palette = self._student_theme_tokens()
-        background = palette["panel_soft"] if secondary else palette["accent_soft"]
-        hover_background = palette["accent_soft"]
-        border = palette["border"] if secondary else palette["accent"]
-        extra = ""
-        if min_height:
-            extra += f"min-height: {min_height};"
-        if min_width:
-            extra += f"min-width: {min_width};"
-        return f"""
-            QPushButton {{
-                background: {background};
-                border: 1px solid {border};
-                border-radius: 10px;
-                padding: 10px 14px;
-                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
-                font-size: 14px;
-                font-weight: 700;
-                color: {palette['text']};
-                {extra}
-            }}
-            QPushButton:hover {{
-                background: {hover_background};
-                border-color: {palette['accent']};
-            }}
-            QPushButton:pressed {{
-                background: {palette['accent_soft']};
-            }}
-        """
-
-    def _student_list_style(self):
-        palette = self._student_theme_tokens()
-        return f"""
-            QListWidget {{
-                background: {palette['panel_soft']};
-                border: 1px solid {palette['border']};
-                border-radius: 10px;
-                outline: 0;
-                color: {palette['text']};
-                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
-            }}
-            QListWidget::item {{
-                padding: 8px;
-                border-bottom: 1px solid {palette['border']};
-                color: {palette['text']};
-                background: transparent;
-            }}
-            QListWidget::item:hover {{
-                background: {palette['accent_soft']};
-            }}
-            QListWidget::item:selected {{
-                background: {palette['accent_soft']};
-                color: {palette['text']};
-            }}
-        """
-
-    def _student_text_area_style(self, monospace=False):
-        palette = self._student_theme_tokens()
-        font_family = "'Courier New', monospace" if monospace else f"'{self.student_body_font}', 'Segoe UI', Arial"
-        return f"""
-            QTextEdit {{
-                font-family: {font_family};
-                font-size: 14px;
-                color: {palette['text']};
-                background: {palette['panel_soft']};
-                border: 1px solid {palette['border']};
-                border-radius: 10px;
-                padding: 12px;
-                line-height: 1.6;
-            }}
-        """
-
-    def _student_scroll_area_style(self):
-        palette = self._student_theme_tokens()
-        return f"""
-            QScrollArea {{
-                background: transparent;
-                border: none;
-            }}
-            QScrollBar:vertical {{
-                background: {palette['panel_soft']};
-                width: 10px;
-                border-radius: 5px;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {palette['accent']};
-                border-radius: 5px;
-                min-height: 20px;
-            }}
-            QScrollBar::handle:vertical:hover {{
-                background: {palette['accent_deep']};
-            }}
-        """
-
-    def _student_tab_button_style(self, active=False):
-        palette = self._student_theme_tokens()
-        background = palette["accent"] if active else palette["panel_soft"]
-        color = "#ffffff" if active else palette["text"]
-        border = palette["accent"] if active else palette["border"]
-        hover = palette["accent_deep"] if active else palette["accent_soft"]
-        return f"""
-            QPushButton {{
-                background: {background};
-                color: {color};
-                border: 1px solid {border};
-                border-radius: 8px;
-                font-weight: 700;
-                font-size: 12px;
-                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
-                padding: 8px 12px;
-            }}
-            QPushButton:hover {{ background: {hover}; }}
-        """
-
-    def _apply_student_settings_tab_styles(self, active_tab="camera"):
-        if hasattr(self, "settings_container"):
-            self.settings_container.setStyleSheet(self._student_panel_style(padding=20))
-        if hasattr(self, "btn_camera_tab"):
-            self.btn_camera_tab.setStyleSheet(self._student_tab_button_style(active_tab == "camera"))
-        if hasattr(self, "btn_font_tab"):
-            self.btn_font_tab.setStyleSheet(self._student_tab_button_style(active_tab == "font"))
-
-    def _retint_student_container(self, container):
-        """Apply the active student theme to widgets created by legacy pages."""
-        if not container:
-            return
-
-        for label in container.findChildren(QLabel):
-            existing = label.styleSheet() or ""
-            size = self._student_css_value(existing, "font-size", None)
-            if size is None:
-                point_size = label.font().pointSize()
-                size = f"{point_size}px" if point_size and point_size > 0 else "14px"
-            weight = self._student_css_value(existing, "font-weight", "600")
-            color_key = "muted" if ("#234f8d" in existing or "#666666" in existing or "italic" in existing) else "text"
-            panel = "Quiz Completed" in label.text()
-            label.setStyleSheet(
-                self._student_label_style(
-                    size=size,
-                    weight=weight,
-                    color_key=color_key,
-                    italic="italic" in existing,
-                    panel=panel,
-                )
-            )
-
-        for button in container.findChildren(QPushButton):
-            if button is getattr(self, "video_thumbnail", None):
-                continue
-            if button in (getattr(self, "btn_camera_tab", None), getattr(self, "btn_font_tab", None)):
-                continue
-            existing = button.styleSheet() or ""
-            text = button.text() or ""
-            secondary = "Back" in text or "#999999" in existing
-            min_height = self._student_css_value(existing, "min-height", None)
-            min_width = self._student_css_value(existing, "min-width", None)
-            button.setStyleSheet(
-                self._student_content_button_style(
-                    min_height=min_height,
-                    min_width=min_width,
-                    secondary=secondary,
-                )
-            )
-
-        for text_edit in container.findChildren(QTextEdit):
-            existing = text_edit.styleSheet() or ""
-            text_edit.setStyleSheet(self._student_text_area_style(monospace="Courier" in existing))
-
-        for list_widget in container.findChildren(QListWidget):
-            list_widget.setStyleSheet(self._student_list_style())
-
-        for scroll_area in container.findChildren(QScrollArea):
-            scroll_area.setStyleSheet(self._student_scroll_area_style())
-
-    def _retint_student_dynamic_pages(self):
-        for attr in (
-            "elearning_container",
-            "learning_materials_container",
-            "practice_container",
-            "topic_container",
-            "practice_records_container",
-            "training_records_container",
-            "simulation_container",
-            "simulator_conn_widget",
-            "settings_container",
-            "_completion_frame",
-        ):
-            self._retint_student_container(getattr(self, attr, None))
-
-        if hasattr(self, "settings_container"):
-            active_tab = "font" if getattr(self, "settings_widget", None) and self.settings_widget.isVisible() else "camera"
-            self._apply_student_settings_tab_styles(active_tab)
-
-        if getattr(self, "practice_records_container", None) and not self.practice_records_container.isHidden():
-            self._update_practice_statistics()
-        if getattr(self, "training_records_container", None) and not self.training_records_container.isHidden():
-            self._update_training_records()
     
     def start_welcome(self):
         # Play music (if available)
@@ -1746,7 +1511,6 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.elearning_container)
         
         self.elearning_container.setVisible(True)
-        self._retint_student_container(self.elearning_container)
     
     def _show_learning_materials(self):
         """Show learning materials from reading.md."""
@@ -1862,7 +1626,6 @@ class StudentShell(QWidget):
         self.txt_materials_content.verticalScrollBar().setValue(0)
         
         self.learning_materials_container.setVisible(True)
-        self._retint_student_container(self.learning_materials_container)
     
     def _return_from_learning_materials(self):
         """Return from learning materials to elearning main view."""
@@ -2247,7 +2010,6 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.practice_container)
         
         self.practice_container.setVisible(True)
-        self._retint_student_container(self.practice_container)
     
     def _start_random_practice(self):
         """Start random practice with all questions shuffled."""
@@ -2388,7 +2150,6 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.topic_container)
         
         self.topic_container.setVisible(True)
-        self._retint_student_container(self.topic_container)
     
     def _start_topic_practice(self, topic_id):
         """Start topic-based practice."""
@@ -2560,7 +2321,6 @@ class StudentShell(QWidget):
         content_l.insertWidget(2, completion_frame)
         completion_frame.setVisible(True)
         completion_frame.raise_()
-        self._retint_student_container(completion_frame)
     
     def _return_to_practice_options(self):
         """Return to practice menu."""
@@ -2645,7 +2405,6 @@ class StudentShell(QWidget):
         
         self.practice_records_container.setVisible(True)
         self._update_practice_statistics()
-        self._retint_student_container(self.practice_records_container)
 
     def _update_practice_statistics(self):
         """Update practice statistics from history file."""
@@ -2710,10 +2469,6 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(7, 2.8), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
-            palette = self._student_theme_tokens()
-            accent = palette["accent"]
-            text_color = palette["text"]
-            grid_color = palette["muted"]
             
             # Prepare data
             attempts = list(range(1, len(recent_records) + 1))
@@ -2723,25 +2478,25 @@ class StudentShell(QWidget):
             
             # Plot - use matplotlib-compatible colors
             ax.plot(attempts, accuracies, marker='o', linestyle='-', linewidth=2.5, 
-                   color=accent, markersize=8, markerfacecolor=accent,
-                   markeredgecolor=text_color, markeredgewidth=2)
-            ax.fill_between(attempts, accuracies, alpha=0.25, color=accent)
+                   color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF', 
+                   markeredgecolor='#003366', markeredgewidth=2)
+            ax.fill_between(attempts, accuracies, alpha=0.25, color='#4DA3FF')
             
             # Styling - use hex colors and tuples instead of rgba()
-            ax.set_xlabel("Attempt", fontsize=12, color=text_color, weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=12, color=text_color, weight='bold')
+            ax.set_xlabel("Attempt", fontsize=12, color='#003366', weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=12, color='#003366', weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(recent_records) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color=grid_color)
+            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))  # Use tuple instead of rgba()
             
             # Set tick colors and labels
-            ax.tick_params(colors=text_color, labelsize=10)
+            ax.tick_params(colors='#003366', labelsize=10)
             ax.set_xticks(attempts)
             
             # Spine styling
             for spine in ax.spines.values():
-                spine.set_color(accent)
+                spine.set_color('#4DA3FF')
                 spine.set_linewidth(2)
             
             fig.tight_layout(pad=1.0)
@@ -2786,7 +2541,16 @@ class StudentShell(QWidget):
             text_widget = QTextEdit()
             text_widget.setReadOnly(True)
             text_widget.setText(chart_text)
-            text_widget.setStyleSheet(self._student_text_area_style(monospace=True))
+            text_widget.setStyleSheet("""
+                QTextEdit {
+                    font-family: 'Courier New', monospace;
+                    font-size: 11px;
+                    color: #003366;
+                    background: rgba(255, 255, 255, 0.05);
+                    border: none;
+                    padding: 8px;
+                }
+            """)
             text_widget.setMaximumHeight(180)
             
             self.records_chart_layout.addWidget(text_widget, 1)
@@ -2935,7 +2699,6 @@ class StudentShell(QWidget):
         
         self.training_records_container.setVisible(True)
         self._update_training_records()
-        self._retint_student_container(self.training_records_container)
 
     def _update_training_records(self):
         """Update training records from storage with charts."""
@@ -3015,34 +2778,30 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
-            palette = self._student_theme_tokens()
-            accent = palette["accent"]
-            text_color = palette["text"]
-            grid_color = palette["muted"]
             
             # Prepare data
             attempts = list(range(1, len(elapsed_times) + 1))
             
             # Plot
             ax.plot(attempts, elapsed_times, marker='o', linestyle='-', linewidth=2.5,
-                   color=accent, markersize=8, markerfacecolor=accent,
-                   markeredgecolor=text_color, markeredgewidth=2)
-            ax.fill_between(attempts, elapsed_times, alpha=0.25, color=accent)
+                   color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF',
+                   markeredgecolor='#003366', markeredgewidth=2)
+            ax.fill_between(attempts, elapsed_times, alpha=0.25, color='#4DA3FF')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color=text_color, weight='bold')
-            ax.set_ylabel("Time (seconds)", fontsize=11, color=text_color, weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
+            ax.set_ylabel("Time (seconds)", fontsize=11, color='#003366', weight='bold')
             ax.set_xlim(0.5, len(elapsed_times) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color=grid_color)
+            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors=text_color, labelsize=9)
+            ax.tick_params(colors='#003366', labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
             for spine in ax.spines.values():
-                spine.set_color(accent)
+                spine.set_color('#4DA3FF')
                 spine.set_linewidth(1.5)
             
             fig.tight_layout(pad=1.0)
@@ -3070,36 +2829,31 @@ class StudentShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
-            palette = self._student_theme_tokens()
-            text_color = palette["text"]
-            grid_color = palette["muted"]
-            success_color = "#42c873" if self.theme_name == "dark" else "#00AA00"
-            success_edge = "#b9ffd0" if self.theme_name == "dark" else "#006600"
             
             # Prepare data
             attempts = list(range(1, len(accuracies) + 1))
             
             # Plot
             ax.plot(attempts, accuracies, marker='o', linestyle='-', linewidth=2.5,
-                   color=success_color, markersize=8, markerfacecolor=success_color,
-                   markeredgecolor=success_edge, markeredgewidth=2)
-            ax.fill_between(attempts, accuracies, alpha=0.25, color=success_color)
+                   color='#00AA00', markersize=8, markerfacecolor='#00AA00',
+                   markeredgecolor='#006600', markeredgewidth=2)
+            ax.fill_between(attempts, accuracies, alpha=0.25, color='#00AA00')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color=text_color, weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=11, color=text_color, weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=11, color='#003366', weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(accuracies) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color=grid_color)
+            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors=text_color, labelsize=9)
+            ax.tick_params(colors='#003366', labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
             for spine in ax.spines.values():
-                spine.set_color(success_color)
+                spine.set_color('#00AA00')
                 spine.set_linewidth(1.5)
             
             fig.tight_layout(pad=1.0)
@@ -3305,7 +3059,6 @@ class StudentShell(QWidget):
             content_l.insertWidget(2, self.simulation_container)
         
         self.simulation_container.setVisible(True)
-        self._retint_student_container(self.simulation_container)
     def _hide_all_content_containers(self):
         """隐藏所有内容容器（Settings, Simulation, Practice, E-learning等）"""
         if hasattr(self, 'settings_container'):
@@ -3440,7 +3193,6 @@ class StudentShell(QWidget):
         
         # 默认显示摄像头设置
         self._show_camera_settings_tab()
-        self._retint_student_container(self.settings_container)
     
     def _show_camera_settings_tab(self):
         """显示摄像头设置标签"""
@@ -3485,7 +3237,6 @@ class StudentShell(QWidget):
         
         self.settings_content_layout.addWidget(self.camera_manager_widget)
         self.camera_manager_widget.setVisible(True)
-        self._apply_student_settings_tab_styles("camera")
     
     def _show_font_settings_tab(self):
         """显示字体设置标签"""
@@ -3531,7 +3282,6 @@ class StudentShell(QWidget):
         
         self.settings_content_layout.addWidget(self.settings_widget)
         self.settings_widget.setVisible(True)
-        self._apply_student_settings_tab_styles("font")
     
     def _apply_font_globally(self, font_name):
         """Apply selected font to all UI elements"""
@@ -3539,14 +3289,8 @@ class StudentShell(QWidget):
         
         # Save font setting to user_settings.json
         try:
+            settings = {"font": font_name}
             settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "user_settings.json")
-            settings = {}
-            if os.path.exists(settings_path):
-                with open(settings_path, 'r', encoding='utf-8') as f:
-                    loaded_settings = json.load(f)
-                    if isinstance(loaded_settings, dict):
-                        settings = loaded_settings
-            settings["font"] = font_name
             os.makedirs(os.path.dirname(settings_path), exist_ok=True)
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4, ensure_ascii=False)
@@ -3554,15 +3298,12 @@ class StudentShell(QWidget):
         except Exception as e:
             print(f"[Settings] Error saving font: {e}")
         
-        self.student_body_font = font_name or self.student_body_font
-
         # Apply font to main window and all children
         font = QFont(font_name, 11)
         self.setFont(font)
         
         # Apply to specific elements with custom sizes
         self._apply_font_recursive(self, font_name)
-        self.apply_theme(Theme(self.theme_name))
         
         print(f"[Settings] Font applied successfully to all UI")
     
@@ -3704,7 +3445,7 @@ class StudentShell(QWidget):
             
             # Status display
             self.lbl_connection_status = QLabel("")
-            self.lbl_connection_status.setStyleSheet(self._student_label_style(size="16px", weight="600"))
+            self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
             self.lbl_connection_status.setWordWrap(True)
             self.lbl_connection_status.setMinimumHeight(60)
             conn_l.addWidget(self.lbl_connection_status)
@@ -3717,7 +3458,6 @@ class StudentShell(QWidget):
         # Refresh serial hardware on display
         self._refresh_serial_display()
         self.simulator_conn_widget.setVisible(True)
-        self._retint_student_container(self.simulator_conn_widget)
 
     def _refresh_serial_display(self):
         """Refresh the wired serial hardware status shown on the Simulator page."""
@@ -3747,7 +3487,7 @@ class StudentShell(QWidget):
                 f"Default hardware port is {port} @ {baudrate}. "
                 f"Set SURGERYBOX_SERIAL_PORT if Windows assigns a different COM port."
             )
-            self.lbl_connection_status.setStyleSheet(self._student_label_style(size="16px", weight="600"))
+            self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
         except Exception:
             pass
     
@@ -3836,7 +3576,7 @@ class StudentShell(QWidget):
             
             # Show waiting status
             self.lbl_connection_status.setText(f"Testing serial connection on {port}...")
-            self.lbl_connection_status.setStyleSheet(self._student_label_style(size="16px", weight="600"))
+            self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
         except Exception as e:
             self.lbl_connection_status.setText(f"✗ Error")
             self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #FF0000; font-weight: 700;")
