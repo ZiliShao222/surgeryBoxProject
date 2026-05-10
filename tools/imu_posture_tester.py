@@ -198,8 +198,8 @@ def main() -> int:
         default="roll",
         help="Euler angle used for side-lying judgement",
     )
-    parser.add_argument("--min-deg", type=float, default=70.0, help="Minimum absolute angle for OK")
-    parser.add_argument("--max-deg", type=float, default=110.0, help="Maximum absolute angle for OK")
+    parser.add_argument("--min-deg", type=float, default=55.0, help="Minimum absolute angle for OK")
+    parser.add_argument("--max-deg", type=float, default=125.0, help="Maximum absolute angle for OK")
     parser.add_argument("--print-every", type=float, default=0.2, help="Seconds between printed lines")
     args = parser.parse_args()
 

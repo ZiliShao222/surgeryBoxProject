@@ -126,6 +126,17 @@ pio device monitor -b 115200
 [Motor] Initialized
 ```
 
+IMU 侧卧检测现在走统一主控接入。请先把 IMU 接到 ESP8266：
+
+```text
+IMU 3V3 -> ESP8266 3.3V
+IMU GND -> ESP8266 GND
+IMU TX  -> ESP8266 D1
+IMU RX  -> 暂不接
+```
+
+ESP8266 通过 USB 连接电脑后，桌面端读取该板子的 `COM3 / 115200`。运行训练页面前要关闭 `pio device monitor`、UartAssist 等串口工具，否则桌面端无法打开 `COM3`。
+
 ## 硬件连接测试
 
 ### WiFi 连接

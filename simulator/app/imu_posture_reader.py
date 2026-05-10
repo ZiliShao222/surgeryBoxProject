@@ -184,8 +184,8 @@ class ImuPostureThread(QThread):
         port: str = "COM3",
         baud: int = 115200,
         axis: str = "roll",
-        min_deg: float = 70.0,
-        max_deg: float = 110.0,
+        min_deg: float = 55.0,
+        max_deg: float = 125.0,
         parent=None,
     ):
         super().__init__(parent)

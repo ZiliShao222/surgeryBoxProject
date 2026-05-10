@@ -44,6 +44,18 @@ src/main.cpp
 | 刹车舵机 | `D2` | `src/servo_brake.cpp` |
 | 电机 A | `D7` | `src/motor.cpp` |
 | 电机 B | `D8` | `src/motor.cpp` |
+| IMU 串口接收 | `D1` | `src/imu_bridge.cpp` |
+
+IMU 体位传感器由 ESP8266 统一接入电脑。当前接线：
+
+| IMU | ESP8266 Wemos D1 |
+| --- | --- |
+| `3V3` | `3.3V`，可与其他模块共用 |
+| `GND` | `GND`，可与其他模块共用 |
+| `TX` | `D1` |
+| `RX` | 暂不接 |
+
+ESP8266 固件使用 `SoftwareSerial` 从 `D1` 读取 IMU 数据，并把原始二进制帧转发到 USB 串口。桌面端仍读取 `COM3 / 115200`，继续用原有欧拉角解析和侧卧判断逻辑。`D5/D6`、`D7/D8`、`D2` 已被现有硬件占用，不要再接 IMU。
 
 ## 编码器换算
 
