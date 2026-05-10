@@ -2,7 +2,7 @@ from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtWidgets import (
     QWidget, QMainWindow, QStackedWidget, QHBoxLayout, QVBoxLayout,
     QPushButton, QLabel, QFrame, QListWidget, QListWidgetItem, QSlider, QComboBox,
-    QTextEdit, QScrollArea
+    QTextEdit, QScrollArea, QApplication
 )
 from PySide6.QtGui import QFont, QPixmap
 
@@ -24,11 +24,12 @@ except Exception:
 import os
 import random
 import json
+import re
 
 from app.config import APP_NAME, APP_VERSION
 from app.ui.login_page import LoginPage
 from app.camera_manager import CameraManager
-from app.hardware_connector import HardwareConnector, ConnectionTestThread
+from app.hardware_connector import HardwareConnector
 from app.ui.theme import Theme, qss_for
 from app.ui.widgets import section_placeholder
 from app.ui.settings_widget import SettingsWidget
@@ -53,18 +54,30 @@ class App(QMainWindow):
         self.stack.addWidget(self.login)
 
         self.main = None
+        if hasattr(self.login, "clear_fields"):
+            self.login.clear_fields()
         self.stack.setCurrentWidget(self.login)
 
     def _on_login(self, user):
         write_profile_if_missing(user.username, user.role)
 
-        # When logged in, initialize main shell and start welcome behavior
-        self.main = MainShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        # Route to a role-specific shell after login.
+        if user.role == "trainer":
+            from app.ui.teacher_shell import TeacherShell
+            self.main = TeacherShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        else:
+            self.main = StudentShell(user=user, on_logout=self._logout, on_toggle_theme=self._toggle_theme)
+        account_theme = self._theme_for_user(user.username, user.role)
+        self.theme = account_theme
+        self.setStyleSheet(qss_for(account_theme))
+        if hasattr(self.main, "apply_theme"):
+            self.main.apply_theme(account_theme)
         self.stack.addWidget(self.main)
         self.stack.setCurrentWidget(self.main)
 
-        # Start welcome behaviors (music & quote)
-        self.main.start_welcome()
+        # Start welcome behaviors when the shell supports them.
+        if hasattr(self.main, "start_welcome"):
+            self.main.start_welcome()
 
 
     def _logout(self):
@@ -85,17 +98,91 @@ class App(QMainWindow):
                         self.main.music_audio_output.setVolume(0.0)
                 except Exception:
                     pass
+        
+        # Reset theme to light before returning to login page
+        self.theme = Theme("light")
+        self.setStyleSheet(qss_for(self.theme))
+        
+        if hasattr(self.login, "clear_fields"):
+            self.login.clear_fields()
         self.stack.setCurrentWidget(self.login)
 
     def _toggle_theme(self):
-        self.theme = Theme("dark" if self.theme.name == "light" else "light")
-        self.setStyleSheet(qss_for(self.theme))
+        if not self.main or not hasattr(self.main, "user"):
+            return
 
-class MainShell(QWidget):
+        username = self.main.user.username
+        role = self.main.user.role
+        theme_names = getattr(self.main, "theme_names", ("light", "dark"))
+        current = self._theme_for_user(username, role)
+        try:
+            current_index = theme_names.index(current.name)
+        except ValueError:
+            current_index = 0
+        next_theme = Theme(theme_names[(current_index + 1) % len(theme_names)])
+        self._save_theme_for_user(username, next_theme.name)
+        self.theme = next_theme
+        self.setStyleSheet(qss_for(next_theme))
+
+        if hasattr(self.main, "apply_theme"):
+            self.main.apply_theme(next_theme)
+
+    def _user_settings_path(self):
+        return os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "user_settings.json")
+        )
+
+    def _load_user_settings(self):
+        path = self._user_settings_path()
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            print(f"[Settings] Failed to load user settings: {exc}")
+            return {}
+
+    def _save_user_settings(self, settings):
+        path = self._user_settings_path()
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=4, ensure_ascii=False)
+        except Exception as exc:
+            print(f"[Settings] Failed to save user settings: {exc}")
+
+    def _default_theme_name_for_role(self, role):
+        return "student_blue" if role == "trainee" else "light"
+
+    def _theme_for_user(self, username, role=None):
+        settings = self._load_user_settings()
+        themes = settings.get("themes_by_user", {})
+        if not isinstance(themes, dict):
+            themes = {}
+
+        default_theme = self._default_theme_name_for_role(role)
+        theme_name = themes.get(username, default_theme)
+        if theme_name not in ("student_blue", "light", "dark"):
+            theme_name = default_theme
+        return Theme(theme_name)
+
+    def _save_theme_for_user(self, username, theme_name):
+        settings = self._load_user_settings()
+        themes = settings.get("themes_by_user", {})
+        if not isinstance(themes, dict):
+            themes = {}
+
+        themes[username] = theme_name if theme_name in ("student_blue", "light", "dark") else "light"
+        settings["themes_by_user"] = themes
+        self._save_user_settings(settings)
+
+class StudentShell(QWidget):
     # Placeholder quotes - replace the strings below with your 5 short nursing quotes
     QUOTES = [
         "The most important practical lesson that can be given to nurses is to teach them what to observe.",
-        "Nursing is an art: and if it is to be made an art, it requires as exclusive a devotion as any painter’s or sculptor’s work.",
+        "Nursing is an art: and if it is to be made an art, it requires as exclusive a devotion as any painter's or sculptor's work.",
         "Nursing is a profession, not a task.",
         "The nurse is the last line of defence.",
         "When in doubt, stop and escalate.",
@@ -104,10 +191,15 @@ class MainShell(QWidget):
     def __init__(self, user, on_logout, on_toggle_theme, parent=None):
         super().__init__(parent)
         # identify root widget for specific stylesheet overrides
-        self.setObjectName("MainShell")
+        self.setObjectName("StudentShell")
         self.user = user
         self.on_logout = on_logout
         self.on_toggle_theme = on_toggle_theme
+        self.theme_name = "student_blue"
+        self.theme_names = ("student_blue", "light", "dark")
+        self.student_heading_font = "Aptos"
+        self.student_body_font = "Aptos"
+        self.student_mono_font = "Cascadia Mono"
 
         # --- click sound (default) ---
         self.click_sfx = QSoundEffect()
@@ -182,20 +274,16 @@ class MainShell(QWidget):
         except Exception:
             pass
 
-        # Top bar (white translucent strip)
-        top = QFrame()
-        top.setObjectName("TopBar")
-        top.setStyleSheet("background: rgba(255,255,255,0.6); border: none; border-radius: 12px;")
-        top_l = QHBoxLayout(top)
+        # Top bar (themed translucent strip)
+        self.top_bar = QFrame()
+        self.top_bar.setObjectName("TopBar")
+        top_l = QHBoxLayout(self.top_bar)
         top_l.setContentsMargins(14, 10, 14, 10)
         top_l.setSpacing(10)
 
-        left_title = QLabel(f"Simulation Training for Epidural Analgesia Nursing Care")
-        left_title.setObjectName("Header")
-        # enforce font, size and color via stylesheet to override theme QSS
-        left_title.setStyleSheet("color: #003366; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 25px; font-weight: 700; background: transparent; border: none; padding: 0;")
-
-        top_l.addWidget(left_title)
+        self.left_title = QLabel("Simulation Training for Epidural Analgesia Nursing Care")
+        self.left_title.setObjectName("Header")
+        top_l.addWidget(self.left_title)
         top_l.addStretch(1)
 
         # Language selector temporarily disabled
@@ -220,6 +308,11 @@ class MainShell(QWidget):
         btn_sim_conn = QPushButton("Simulator")
         btn_sim_conn.clicked.connect(lambda: self._on_button_click(self._show_simulator_connection))
         top_l.addWidget(btn_sim_conn)
+
+        # Per-account theme toggle for the student shell.
+        btn_theme = QPushButton("Theme")
+        btn_theme.clicked.connect(lambda: self._on_button_click(self.on_toggle_theme))
+        top_l.addWidget(btn_theme)
 
         # Settings (placeholder)
         btn_settings = QPushButton("Settings")
@@ -249,28 +342,20 @@ class MainShell(QWidget):
                 background: rgba(0,0,0,0.08);
             }
         """
-        for w in top.findChildren(QPushButton):
+        self.top_buttons = self.top_bar.findChildren(QPushButton)
+        for w in self.top_buttons:
             w.setStyleSheet(btn_style)
 
-        # Apply main shell handwritten font + color globally
-        try:
-            existing = self.styleSheet() or ""
-            existing += f"\n#{self.objectName()} {{ font-family: 'Segoe Script', cursive; color: #003366; }}"
-            self.setStyleSheet(existing)
-        except Exception:
-            pass
-
-        root.addWidget(top)
+        root.addWidget(self.top_bar)
 
         # Body: left menu + content
         body = QHBoxLayout()
         body.setSpacing(12)
 
         # Left menu
-        menu = QFrame()
-        menu.setObjectName("Card")
-        menu.setStyleSheet("background: rgba(255,255,255,0.85);")
-        menu_l = QVBoxLayout(menu)
+        self.menu_panel = QFrame()
+        self.menu_panel.setObjectName("Card")
+        menu_l = QVBoxLayout(self.menu_panel)
         menu_l.setContentsMargins(10, 10, 10, 10)
         menu_l.setSpacing(8)
 
@@ -288,8 +373,7 @@ class MainShell(QWidget):
             ("AI Nursing Mentor", "ai_mentor"),  # 新增AI对话菜单
             # ("Report Records", "reports"),
         ]
-        if self.user.role == "trainer":
-            items.append(("Trainer Dashboard", "dashboard"))
+        # Teacher-only modules live in TeacherShell; the student shell stays training-focused.
 
         for text, key in items:
             it = QListWidgetItem(text)
@@ -302,11 +386,10 @@ class MainShell(QWidget):
         # Start with Welcome selected (index 0)
         self.menu_list.setCurrentRow(0)
 
-        lbl_modules = QLabel("Modules")
-        lbl_modules.setObjectName("ModulesLabel")
-        lbl_modules.setFont(QFont('Segoe Print', 22, QFont.Bold))
-        lbl_modules.setStyleSheet("color: #003366; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 26px; font-weight: 700;")
-        menu_l.addWidget(lbl_modules)
+        self.modules_label = QLabel("Modules")
+        self.modules_label.setObjectName("ModulesLabel")
+        self.modules_label.setFont(QFont(self.student_heading_font, 22, QFont.Bold))
+        menu_l.addWidget(self.modules_label)
 
         # menu list style: transparent bg; items styled as button-like with selection state using Segoe Print
         self.menu_list.setStyleSheet("""
@@ -317,22 +400,12 @@ class MainShell(QWidget):
         self.menu_list.setSelectionMode(QListWidget.SingleSelection)
         menu_l.addWidget(self.menu_list)
 
-        # ensure MainShell-local override for Modules label so theme can't override it
-        try:
-            existing = self.styleSheet() or ""
-            existing += f"\n#{self.objectName()} QLabel#ModulesLabel {{ font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 28px; font-weight:700; color: #003366; }}"
-            self.setStyleSheet(existing)
-        except Exception:
-            pass
-
-        menu.setFixedWidth(260)
-        body.addWidget(menu)
+        self.menu_panel.setFixedWidth(260)
+        body.addWidget(self.menu_panel)
 
         # Content area
         self.content = QFrame()
         self.content.setObjectName("Card")
-        # keep the content slightly translucent to show background image (less transparent now)
-        self.content.setStyleSheet("background: rgba(255,255,255,0.8);")
         content_l = QVBoxLayout(self.content)
         content_l.setContentsMargins(18, 18, 18, 18)
         content_l.setSpacing(12)
@@ -340,25 +413,20 @@ class MainShell(QWidget):
         self.content_title = QLabel("")
         self.content_title.setObjectName("Header")
         self.content_title.setFont(QFont('Segoe Print', 28, QFont.Bold))
-        # enforce font-family & size via stylesheet so it is not overridden by theme QSS
-        self.content_title.setStyleSheet("color: #003366; background: transparent; font-family: 'Segoe Print', 'Segoe UI', Arial; font-size: 30px; font-weight:700;")
         self.content_title.setVisible(False)
 
         self.content_view = QLabel("")
         self.content_view.setAlignment(Qt.AlignCenter)
         self.content_view.setWordWrap(True)
-        self.content_view.setStyleSheet("QLabel{font-size:18px;opacity:0.95; font-family: 'Segoe Print', 'Segoe UI', Arial; color:#003366; background: transparent;}")
         self.content_view.setVisible(False)
 
         # quote label centered and larger (kept for generic use)
         self.quote_label = QLabel("")
-        self.quote_label.setStyleSheet("font-family: 'Segoe Print', 'Brush Script MT', cursive; color:#234f8d; font-size:32px; background: transparent;")
         self.quote_label.setAlignment(Qt.AlignCenter)
         self.quote_label.setWordWrap(True)
 
         # welcome_quote: larger, placed center-right of bottom area; visible on Welcome
         self.welcome_quote = QLabel("")
-        self.welcome_quote.setStyleSheet("font-family: 'Segoe Print', 'Brush Script MT', cursive; color:#234f8d; font-size:26px; background: transparent;")
         self.welcome_quote.setWordWrap(True)
         self.welcome_quote.setAlignment(Qt.AlignCenter)
         self.welcome_quote.setVisible(False)  # will be shown when Welcome is selected
@@ -373,6 +441,7 @@ class MainShell(QWidget):
 
         body.addWidget(self.content, stretch=1)
         root.addLayout(body, stretch=1)
+        self.apply_theme(Theme(self.theme_name))
 
         # default content: trigger welcome on startup (delayed to avoid accessing incomplete objects)
         # Use QTimer to defer the call until after initialization completes
@@ -471,10 +540,13 @@ class MainShell(QWidget):
             if os.path.exists(config_path):
                 with open(config_path, 'r', encoding='utf-8') as f:
                     settings = json.load(f)
-                    font_name = settings.get("font", "Segoe Print")
+                    font_name = settings.get("font", self.student_body_font)
+                    if font_name == "Candara":
+                        font_name = self.student_body_font
+                    self.student_body_font = font_name or self.student_body_font
                     print(f"[Settings] Loaded user font: {font_name}")
                     
-                    # Apply font to entire MainShell
+                    # Apply font to entire StudentShell
                     self._apply_font_recursively(self, font_name)
         except Exception as e:
             print(f"[Settings] Error loading user font: {e}")
@@ -502,10 +574,263 @@ class MainShell(QWidget):
             child.setFont(new_font)
     
     def _apply_font_globally(self, font_name):
-        """Apply selected font to all UI elements in MainShell"""
-        print(f"[Settings] Applying font to MainShell: {font_name}")
+        """Apply selected font to all UI elements in StudentShell"""
+        print(f"[Settings] Applying font to StudentShell: {font_name}")
+        self.student_body_font = font_name or self.student_body_font
         self._apply_font_recursively(self, font_name)
+        self.apply_theme(Theme(self.theme_name))
         print(f"[Settings] Font applied successfully")
+
+    def _student_theme_tokens(self):
+        if self.theme_name == "dark":
+            return {
+                "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #071923, stop:0.55 #0d2631, stop:1 #153c45)",
+                "panel": "rgba(10, 31, 42, 0.88)",
+                "panel_soft": "rgba(16, 46, 58, 0.74)",
+                "card": "rgba(16, 51, 63, 0.82)",
+                "card_hover": "rgba(22, 70, 84, 0.92)",
+                "text": "#e8fbff",
+                "muted": "#9dc6cd",
+                "accent": "#42d6c5",
+                "accent_deep": "#18a999",
+                "accent_soft": "rgba(66, 214, 197, 0.18)",
+                "border": "rgba(119, 232, 219, 0.26)",
+                "shadow": "rgba(0, 0, 0, 0.28)",
+            }
+        if self.theme_name == "light":
+            return {
+                "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eef8f7, stop:0.55 #f8fbff, stop:1 #eaf2ff)",
+                "panel": "rgba(255, 255, 255, 0.84)",
+                "panel_soft": "rgba(255, 255, 255, 0.68)",
+                "card": "rgba(255, 255, 255, 0.78)",
+                "card_hover": "rgba(240, 250, 255, 0.92)",
+                "text": "#12354a",
+                "muted": "#557382",
+                "accent": "#207d88",
+                "accent_deep": "#115e67",
+                "accent_soft": "rgba(32, 125, 136, 0.13)",
+                "border": "rgba(32, 125, 136, 0.20)",
+                "shadow": "rgba(32, 72, 96, 0.10)",
+            }
+        return {
+            "shell_bg": "qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eaf6ff, stop:0.48 #f7fbff, stop:1 #dcecff)",
+            "panel": "rgba(248, 252, 255, 0.88)",
+            "panel_soft": "rgba(235, 246, 255, 0.78)",
+            "card": "rgba(255, 255, 255, 0.82)",
+            "card_hover": "rgba(230, 244, 255, 0.96)",
+            "text": "#15354f",
+            "muted": "#58758d",
+            "accent": "#3f8fcf",
+            "accent_deep": "#246fa8",
+            "accent_soft": "rgba(63, 143, 207, 0.15)",
+            "border": "rgba(64, 139, 198, 0.22)",
+            "shadow": "rgba(44, 96, 140, 0.12)",
+        }
+
+    def apply_theme(self, theme):
+        """Apply a coordinated theme to the student shell and dynamic pages."""
+        self.theme_name = getattr(theme, "name", "light")
+        palette = self._student_theme_tokens()
+        heading = self.student_heading_font
+        body = self.student_body_font
+
+        self.setStyleSheet(
+            f"""
+            QWidget#StudentShell {{
+                background: {palette['shell_bg']};
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
+            }}
+            QFrame#TopBar, QFrame#Card {{
+                background: {palette['panel']};
+                border: 1px solid {palette['border']};
+                border-radius: 18px;
+            }}
+            QLabel#Header {{
+                color: {palette['text']};
+                font-family: '{heading}', '{body}', 'Segoe UI', Arial;
+                font-weight: 800;
+            }}
+            QLabel#ModulesLabel {{
+                color: {palette['text']};
+                font-family: '{heading}', '{body}', 'Segoe UI', Arial;
+                font-size: 28px;
+                font-weight: 800;
+            }}
+            """
+        )
+
+        if getattr(self, "bg", None):
+            self.bg.setVisible(self.theme_name == "light")
+
+        if hasattr(self, "top_bar"):
+            self.top_bar.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 18px;"
+            )
+        if hasattr(self, "menu_panel"):
+            self.menu_panel.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 18px;"
+            )
+        if hasattr(self, "content"):
+            self.content.setStyleSheet(
+                f"background: {palette['panel']}; border: 1px solid {palette['border']}; border-radius: 20px;"
+            )
+        if hasattr(self, "left_title"):
+            self.left_title.setStyleSheet(
+                f"color: {palette['text']}; font-family: '{heading}', '{body}', 'Segoe UI', Arial; "
+                f"font-size: 24px; font-weight: 800; background: transparent; border: none; padding: 0;"
+            )
+        if hasattr(self, "modules_label"):
+            self.modules_label.setStyleSheet(
+                f"color: {palette['text']}; font-family: '{heading}', '{body}', 'Segoe UI', Arial; "
+                f"font-size: 27px; font-weight: 800; background: transparent; border: none;"
+            )
+        if hasattr(self, "menu_list"):
+            self.menu_list.setStyleSheet(
+                f"""
+                QListWidget {{
+                    border: 0px;
+                    background: transparent;
+                    outline: none;
+                }}
+                QListWidget::item {{
+                    padding: 14px;
+                    border-radius: 12px;
+                    color: {palette['muted']};
+                    font-family: '{body}', 'Segoe UI', Arial;
+                    font-size: 18px;
+                }}
+                QListWidget::item:hover {{
+                    background: {palette['accent_soft']};
+                    color: {palette['text']};
+                }}
+                QListWidget::item:selected {{
+                    background: {palette['accent_soft']};
+                    border-left: 4px solid {palette['accent']};
+                    color: {palette['text']};
+                    font-weight: 800;
+                }}
+                """
+            )
+        if hasattr(self, "content_title"):
+            self.content_title.setStyleSheet(
+                f"color: {palette['text']}; background: transparent; "
+                f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 30px; font-weight: 800;"
+            )
+        if hasattr(self, "content_view"):
+            self.content_view.setStyleSheet(
+                f"QLabel {{ font-size: 18px; font-family: '{body}', 'Segoe UI', Arial; "
+                f"color: {palette['muted']}; background: transparent; }}"
+            )
+        if hasattr(self, "quote_label"):
+            self.quote_label.setStyleSheet(
+                f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; color: {palette['accent']}; "
+                f"font-size: 30px; background: transparent;"
+            )
+        if hasattr(self, "welcome_quote"):
+            self.welcome_quote.setStyleSheet(
+                f"font-family: '{body}', 'Segoe UI', Arial; color: {palette['muted']}; "
+                f"font-size: 22px; background: transparent;"
+            )
+        if hasattr(self, "top_buttons"):
+            button_style = self._student_top_button_style(palette)
+            for button in self.top_buttons:
+                button.setStyleSheet(button_style)
+
+        current_key = None
+        if hasattr(self, "menu_list"):
+            current_item = self.menu_list.currentItem()
+            if current_item:
+                current_key = current_item.data(Qt.UserRole)
+
+        if current_key == "welcome" and hasattr(self, "student_home_container") and self.student_home_container:
+            self._show_student_home()
+        self._refresh_student_inline_text_colors()
+        if hasattr(self, "practice_records_container") and not self.practice_records_container.isHidden():
+            self._update_practice_statistics()
+            self._refresh_student_inline_text_colors()
+        if hasattr(self, "training_records_container") and not self.training_records_container.isHidden():
+            self._update_training_records()
+            self._refresh_student_inline_text_colors()
+
+    def _student_top_button_style(self, palette=None):
+        palette = palette or self._student_theme_tokens()
+        return f"""
+            QPushButton {{
+                background: {palette['panel_soft']};
+                border: 1px solid {palette['border']};
+                padding: 7px 12px;
+                border-radius: 10px;
+                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
+                font-size: 14px;
+                font-weight: 700;
+                color: {palette['text']};
+            }}
+            QPushButton:hover {{
+                background: {palette['accent_soft']};
+                border-color: {palette['accent']};
+            }}
+        """
+
+    def _student_inline_text_targets(self):
+        """Return readable legacy text colors for inline styles on each student theme."""
+        if self.theme_name == "dark":
+            return self._student_theme_tokens()["text"], self._student_theme_tokens()["muted"]
+        return "#003366", "#234f8d"
+
+    def _replace_student_inline_text_colors(self, style):
+        """Retint only CSS text color values; leave content, borders, and layout untouched."""
+        if not style:
+            return style
+
+        primary, muted = self._student_inline_text_targets()
+        primary_sources = ("#003366", "#e8fbff")
+        muted_sources = ("#234f8d", "#9dc6cd")
+
+        for old in primary_sources:
+            style = re.sub(
+                rf"(?<![-\w])color\s*:\s*{re.escape(old)}",
+                f"color: {primary}",
+                style,
+                flags=re.IGNORECASE,
+            )
+        for old in muted_sources:
+            style = re.sub(
+                rf"(?<![-\w])color\s*:\s*{re.escape(old)}",
+                f"color: {muted}",
+                style,
+                flags=re.IGNORECASE,
+            )
+        return style
+
+    def _refresh_student_inline_text_colors(self):
+        """Refresh hard-coded legacy blue text on pages that already exist."""
+        containers = [
+            getattr(self, name, None)
+            for name in (
+                "elearning_container",
+                "learning_materials_container",
+                "practice_container",
+                "topic_container",
+                "practice_records_container",
+                "training_records_container",
+                "simulation_container",
+                "simulator_conn_widget",
+                "settings_container",
+                "ai_mentor_widget",
+                "_completion_frame",
+            )
+        ]
+
+        for container in containers:
+            if not container:
+                continue
+            for widget_type in (QLabel, QPushButton, QListWidget, QTextEdit):
+                for widget in container.findChildren(widget_type):
+                    old_style = widget.styleSheet()
+                    new_style = self._replace_student_inline_text_colors(old_style)
+                    if new_style != old_style:
+                        widget.setStyleSheet(new_style)
     
     def start_welcome(self):
         # Play music (if available)
@@ -692,8 +1017,9 @@ class MainShell(QWidget):
                 self.current_training = None
             
             # 显示训练选项
-            print(f"[Training] Showing simulation options")
-            self._show_simulation_options()
+            print(f"[Training] Showing student dashboard with AI summary")
+            self._show_student_home()
+            QTimer.singleShot(250, self._generate_student_ai_summary)
         except Exception as e:
             print(f"[Training] Error in training completion: {e}")
     
@@ -755,18 +1081,7 @@ class MainShell(QWidget):
             self.simulator_conn_widget.setVisible(False)
         
         if key == "welcome":
-            # Verify welcome_quote exists before using it
-            if not hasattr(self, 'welcome_quote'):
-                print("Warning: welcome_quote not initialized yet")
-                return
-            
-            # show a large quote centered in content area
-            q = random.choice(self.QUOTES)
-            self.welcome_quote.setText(q)
-            self.welcome_quote.setVisible(True)
-            # hide other content
-            self.content_title.setVisible(False)
-            self.content_view.setVisible(False)
+            self._show_student_home()
             return
         elif key == "simulation":
             # Show three training option buttons
@@ -813,6 +1128,282 @@ class MainShell(QWidget):
     def _set_content(self, text: str):
         self.content_title.setText(text.splitlines()[0])
         self.content_view.setText(text)
+
+    def _show_student_home(self):
+        """Show a student-focused landing page with quick actions and recent progress."""
+        if not hasattr(self, 'welcome_quote') or not hasattr(self, 'content_title'):
+            QTimer.singleShot(200, self._show_student_home)
+            return
+
+        self._hide_all_content_containers()
+        self.welcome_quote.setVisible(False)
+        self.content_view.setVisible(False)
+        self.content_title.setText("Student Dashboard")
+        self.content_title.setVisible(True)
+
+        if hasattr(self, 'student_home_container') and self.student_home_container:
+            try:
+                self.content.layout().removeWidget(self.student_home_container)
+                self.student_home_container.deleteLater()
+            except Exception:
+                pass
+
+        self.student_home_container = QFrame()
+        self.student_home_container.setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(self.student_home_container)
+        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        palette = self._student_theme_tokens()
+        heading = self.student_heading_font
+        body = self.student_body_font
+
+        greeting = QLabel(f"Welcome, {self.user.username}. Choose a training task or review your latest progress.")
+        greeting.setWordWrap(True)
+        greeting.setStyleSheet(
+            f"font-family: '{body}', 'Segoe UI', Arial; font-size: 17px; "
+            f"color: {palette['muted']}; font-weight: 700; background: transparent;"
+        )
+        layout.addWidget(greeting)
+
+        stats = self._get_student_training_stats()
+        cards = QHBoxLayout()
+        cards.setSpacing(12)
+        cards.addWidget(self._student_metric_card("Completed", str(stats["total_trainings"])))
+        cards.addWidget(self._student_metric_card("Avg Time", self._student_format_seconds(stats["avg_time"])))
+        cards.addWidget(self._student_metric_card("Best Time", self._student_format_seconds(stats["best_time"])))
+        cards.addWidget(self._student_metric_card("Avg Accuracy", f"{stats['avg_accuracy']:.0f}%"))
+        layout.addLayout(cards)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(12)
+        actions.addWidget(self._student_action_button("Start Simulator\nTraining", "remove_needle_simulator"))
+        actions.addWidget(self._student_action_button("Start Camera AR\nTraining", "remove_needle_no_simulator"))
+
+        summary_btn = QPushButton("Generate AI\nSummary")
+        summary_btn.setStyleSheet(self._student_action_button_style())
+        summary_btn.clicked.connect(self._generate_student_ai_summary)
+        self.student_ai_summary_btn = summary_btn
+        actions.addWidget(summary_btn)
+
+        records_btn = QPushButton("View My\nRecords")
+        records_btn.setStyleSheet(self._student_action_button_style())
+        records_btn.clicked.connect(lambda: self._on_button_click(self._show_training_records))
+        actions.addWidget(records_btn)
+        layout.addLayout(actions)
+
+        recent_title = QLabel("Recent Training")
+        recent_title.setStyleSheet(
+            f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
+            f"color: {palette['text']}; font-weight: 800; background: transparent;"
+        )
+        layout.addWidget(recent_title)
+
+        recent = QTextEdit()
+        recent.setReadOnly(True)
+        recent.setMaximumHeight(160)
+        recent.setStyleSheet(f"""
+            QTextEdit {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 14px;
+                padding: 10px;
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
+                font-size: 13px;
+            }}
+        """)
+        recent.setText(self._student_recent_training_text(stats["summaries"]))
+        layout.addWidget(recent)
+
+        ai_header = QHBoxLayout()
+        ai_header.setSpacing(8)
+        ai_title = QLabel("AI Training Summary")
+        ai_title.setStyleSheet(
+            f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
+            f"color: {palette['text']}; font-weight: 800; background: transparent;"
+        )
+        ai_header.addWidget(ai_title)
+        ai_header.addStretch(1)
+        layout.addLayout(ai_header)
+
+        self.student_ai_summary = QTextEdit()
+        self.student_ai_summary.setReadOnly(True)
+        self.student_ai_summary.setMaximumHeight(190)
+        self.student_ai_summary.setStyleSheet(f"""
+            QTextEdit {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 14px;
+                padding: 10px;
+                color: {palette['text']};
+                font-family: '{body}', 'Segoe UI', Arial;
+                font-size: 13px;
+            }}
+        """)
+        self.student_ai_summary.setText(
+            "After training, a summary is generated automatically. You can also click Generate AI Summary above."
+        )
+        layout.addWidget(self.student_ai_summary)
+        layout.addStretch(1)
+
+        self.content.layout().insertWidget(2, self.student_home_container)
+        self.student_home_container.setVisible(True)
+
+    def _student_metric_card(self, label, value):
+        palette = self._student_theme_tokens()
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 16px;
+                padding: 10px;
+            }}
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 8, 10, 8)
+        value_label = QLabel(value)
+        value_label.setStyleSheet(
+            f"font-family: '{self.student_heading_font}', '{self.student_body_font}', 'Segoe UI', Arial; "
+            f"font-size: 25px; color: {palette['text']}; font-weight: 800; background: transparent; border: none;"
+        )
+        label_label = QLabel(label)
+        label_label.setStyleSheet(
+            f"font-family: '{self.student_body_font}', 'Segoe UI', Arial; font-size: 13px; "
+            f"color: {palette['muted']}; font-weight: 700; background: transparent; border: none;"
+        )
+        layout.addWidget(value_label)
+        layout.addWidget(label_label)
+        return card
+
+    def _student_action_button(self, text, training_key):
+        button = QPushButton(text)
+        button.setStyleSheet(self._student_action_button_style())
+        button.clicked.connect(lambda: self._on_training_button_click(training_key))
+        return button
+
+    def _student_action_button_style(self):
+        palette = self._student_theme_tokens()
+        return f"""
+            QPushButton {{
+                background: {palette['accent_soft']};
+                border: 1px solid {palette['accent']};
+                border-radius: 16px;
+                padding: 16px;
+                font-family: '{self.student_heading_font}', '{self.student_body_font}', 'Segoe UI', Arial;
+                font-size: 16px;
+                font-weight: 800;
+                color: {palette['text']};
+                min-height: 78px;
+            }}
+            QPushButton:hover {{
+                background: {palette['card_hover']};
+                border-color: {palette['accent_deep']};
+            }}
+        """
+
+    def _get_student_training_stats(self):
+        try:
+            from app.training_records import get_training_record_manager
+            manager = get_training_record_manager()
+            stats = manager.get_training_statistics(self.user.username)
+            summaries = stats.get("summaries", [])
+            accuracies = [item.get("accuracy", 0) for item in summaries if item.get("accuracy", 0) > 0]
+            stats["summaries"] = summaries
+            stats["avg_accuracy"] = sum(accuracies) / len(accuracies) if accuracies else 0
+            return stats
+        except Exception as e:
+            print(f"[StudentHome] Error loading training stats: {e}")
+            return {
+                "total_trainings": 0,
+                "avg_time": 0,
+                "best_time": None,
+                "avg_accuracy": 0,
+                "summaries": [],
+            }
+
+    def _student_recent_training_text(self, summaries):
+        if not summaries:
+            return "No training records yet. Start with Simulator Training or Camera AR Training."
+
+        lines = []
+        for item in summaries[:5]:
+            lines.append(
+                f"{self._student_format_date(item.get('completed_at'))} | "
+                f"{self._student_training_label(item.get('training_mode'))} | "
+                f"{self._student_format_seconds(item.get('elapsed_time'))} | "
+                f"{item.get('accuracy', 0):.0f}%"
+            )
+        return "\n".join(lines)
+
+    def _generate_student_ai_summary(self):
+        if not hasattr(self, "student_ai_summary") or self.student_ai_summary is None:
+            return
+
+        stats = self._get_student_training_stats()
+        summaries = stats.get("summaries", [])
+        if not summaries:
+            self.student_ai_summary.setText(
+                "No training record is available yet. Complete one training attempt first."
+            )
+            return
+
+        if hasattr(self, "student_ai_summary_btn"):
+            self.student_ai_summary_btn.setEnabled(False)
+        self.student_ai_summary.setText("Generating latest training summary from the shared AI API...")
+        QApplication.processEvents()
+
+        try:
+            from app.ai_training_agents import create_student_training_agent
+
+            agent = create_student_training_agent()
+            summary = agent.summarize_after_training(
+                self.user.username,
+                summaries[0],
+                recent_records=summaries[1:6],
+            )
+            self.student_ai_summary.setText(summary)
+        except Exception as e:
+            print(f"[StudentHome] AI summary failed: {e}")
+            self.student_ai_summary.setText(
+                "AI training summary failed. Please check the API configuration and try again."
+            )
+        finally:
+            if hasattr(self, "student_ai_summary_btn"):
+                self.student_ai_summary_btn.setEnabled(True)
+
+    def _open_student_ai_summary(self):
+        self._show_student_home()
+        QTimer.singleShot(100, self._generate_student_ai_summary)
+
+    def _student_format_seconds(self, seconds):
+        if seconds is None:
+            return "-"
+        try:
+            seconds = int(float(seconds))
+        except (TypeError, ValueError):
+            return "-"
+        minutes, sec = divmod(seconds, 60)
+        return f"{minutes}m {sec}s" if minutes else f"{sec}s"
+
+    def _student_format_date(self, raw):
+        if not raw:
+            return "-"
+        try:
+            from datetime import datetime
+            return datetime.fromisoformat(raw).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(raw)[:16]
+
+    def _student_training_label(self, mode):
+        labels = {
+            "remove_needle_simulator": "Remove Needle (Simulator)",
+            "remove_needle_no_simulator": "Remove Needle (No Simulator)",
+            "change_dressing": "Change Dressing",
+            "comprehensive": "Comprehensive",
+        }
+        return labels.get(mode, mode or "unknown")
 
     def _show_elearning_content(self):
         """Show E-learning module with video player."""
@@ -994,6 +1585,7 @@ class MainShell(QWidget):
             content_l.insertWidget(2, self.elearning_container)
         
         self.elearning_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _show_learning_materials(self):
         """Show learning materials from reading.md."""
@@ -1109,6 +1701,7 @@ class MainShell(QWidget):
         self.txt_materials_content.verticalScrollBar().setValue(0)
         
         self.learning_materials_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _return_from_learning_materials(self):
         """Return from learning materials to elearning main view."""
@@ -1493,6 +2086,7 @@ class MainShell(QWidget):
             content_l.insertWidget(2, self.practice_container)
         
         self.practice_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _start_random_practice(self):
         """Start random practice with all questions shuffled."""
@@ -1633,6 +2227,7 @@ class MainShell(QWidget):
             content_l.insertWidget(2, self.topic_container)
         
         self.topic_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _start_topic_practice(self, topic_id):
         """Start topic-based practice."""
@@ -1804,6 +2399,7 @@ class MainShell(QWidget):
         content_l.insertWidget(2, completion_frame)
         completion_frame.setVisible(True)
         completion_frame.raise_()
+        self._refresh_student_inline_text_colors()
     
     def _return_to_practice_options(self):
         """Return to practice menu."""
@@ -1888,6 +2484,7 @@ class MainShell(QWidget):
         
         self.practice_records_container.setVisible(True)
         self._update_practice_statistics()
+        self._refresh_student_inline_text_colors()
 
     def _update_practice_statistics(self):
         """Update practice statistics from history file."""
@@ -1952,6 +2549,7 @@ class MainShell(QWidget):
             fig = Figure(figsize=(7, 2.8), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(recent_records) + 1))
@@ -1962,19 +2560,19 @@ class MainShell(QWidget):
             # Plot - use matplotlib-compatible colors
             ax.plot(attempts, accuracies, marker='o', linestyle='-', linewidth=2.5, 
                    color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF', 
-                   markeredgecolor='#003366', markeredgewidth=2)
+                   markeredgecolor=chart_text_color, markeredgewidth=2)
             ax.fill_between(attempts, accuracies, alpha=0.25, color='#4DA3FF')
             
             # Styling - use hex colors and tuples instead of rgba()
-            ax.set_xlabel("Attempt", fontsize=12, color='#003366', weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=12, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=12, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=12, color=chart_text_color, weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(recent_records) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))  # Use tuple instead of rgba()
             
             # Set tick colors and labels
-            ax.tick_params(colors='#003366', labelsize=10)
+            ax.tick_params(colors=chart_text_color, labelsize=10)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2052,6 +2650,8 @@ class MainShell(QWidget):
 
     def _show_training_records(self):
         """Show training (simulation) records with statistics."""
+        if hasattr(self, 'student_home_container'):
+            self.student_home_container.setVisible(False)
         self.content_view.setVisible(False)
         self.content_title.setText("Training Records")
         self.content_title.setVisible(True)
@@ -2090,6 +2690,26 @@ class MainShell(QWidget):
         self.lbl_training_avg = QLabel("Average Time: 0s")
         self.lbl_training_avg.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
         stats_layout.addWidget(self.lbl_training_avg)
+
+        btn_training_ai_summary = QPushButton("Generate AI Summary")
+        btn_training_ai_summary.setStyleSheet("""
+            QPushButton {
+                background: rgba(77, 163, 255, 0.24);
+                border: 2px solid #4DA3FF;
+                border-radius: 8px;
+                padding: 8px 12px;
+                font-family: 'Segoe Print', 'Segoe UI', Arial;
+                font-size: 14px;
+                font-weight: 700;
+                color: #003366;
+            }
+            QPushButton:hover {
+                background: rgba(77, 163, 255, 0.34);
+                border-color: #234f8d;
+            }
+        """)
+        btn_training_ai_summary.clicked.connect(self._open_student_ai_summary)
+        stats_layout.addWidget(btn_training_ai_summary)
         
         stats_layout.addStretch()
         records_layout.addWidget(stats_frame)
@@ -2160,6 +2780,7 @@ class MainShell(QWidget):
         
         self.training_records_container.setVisible(True)
         self._update_training_records()
+        self._refresh_student_inline_text_colors()
 
     def _update_training_records(self):
         """Update training records from storage with charts."""
@@ -2239,6 +2860,7 @@ class MainShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(elapsed_times) + 1))
@@ -2246,18 +2868,18 @@ class MainShell(QWidget):
             # Plot
             ax.plot(attempts, elapsed_times, marker='o', linestyle='-', linewidth=2.5,
                    color='#4DA3FF', markersize=8, markerfacecolor='#4DA3FF',
-                   markeredgecolor='#003366', markeredgewidth=2)
+                   markeredgecolor=chart_text_color, markeredgewidth=2)
             ax.fill_between(attempts, elapsed_times, alpha=0.25, color='#4DA3FF')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
-            ax.set_ylabel("Time (seconds)", fontsize=11, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Time (seconds)", fontsize=11, color=chart_text_color, weight='bold')
             ax.set_xlim(0.5, len(elapsed_times) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors='#003366', labelsize=9)
+            ax.tick_params(colors=chart_text_color, labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2290,6 +2912,7 @@ class MainShell(QWidget):
             fig = Figure(figsize=(5, 2.5), dpi=100)
             fig.patch.set_alpha(0.0)
             ax = fig.add_subplot(111)
+            chart_text_color, chart_grid_color = self._student_inline_text_targets()
             
             # Prepare data
             attempts = list(range(1, len(accuracies) + 1))
@@ -2301,15 +2924,15 @@ class MainShell(QWidget):
             ax.fill_between(attempts, accuracies, alpha=0.25, color='#00AA00')
             
             # Styling
-            ax.set_xlabel("Attempt", fontsize=11, color='#003366', weight='bold')
-            ax.set_ylabel("Accuracy (%)", fontsize=11, color='#003366', weight='bold')
+            ax.set_xlabel("Attempt", fontsize=11, color=chart_text_color, weight='bold')
+            ax.set_ylabel("Accuracy (%)", fontsize=11, color=chart_text_color, weight='bold')
             ax.set_ylim(0, 105)
             ax.set_xlim(0.5, len(accuracies) + 0.5)
-            ax.grid(True, alpha=0.3, linestyle='--', color='#CCCCCC')
+            ax.grid(True, alpha=0.3, linestyle='--', color=chart_grid_color)
             ax.set_facecolor((1.0, 1.0, 1.0, 0.05))
             
             # Styling ticks
-            ax.tick_params(colors='#003366', labelsize=9)
+            ax.tick_params(colors=chart_text_color, labelsize=9)
             ax.set_xticks(attempts)
             
             # Spine styling
@@ -2347,21 +2970,20 @@ class MainShell(QWidget):
             except ImportError:
                 # 使用示例配置
                 from app.ai_config_example import API_URL, API_KEY, MODEL, BASE_URL
-                print("[MainWindow] Warning: Using example config. Please create ai_config_local.py with your API key")
-                # 保持 self.ai_mentor 为 None
-                return None
+                print("[MainWindow] Warning: Using example AI config. Prefer DASHSCOPE_API_KEY env var for secrets")
 
-            # 验证API配置
-            if API_KEY == "your-api-key-here" or not API_KEY:
-                print("[MainWindow] Error: API key not configured. Please set it in app/ai_config_local.py")
+            # Validate API config
+            api_key = API_KEY or os.getenv("DASHSCOPE_API_KEY", "")
+            if api_key == "your-api-key-here" or not api_key:
+                print("[MainWindow] Error: API key not configured. Please set API_KEY in app/ai_config_local.py")
                 return None
 
             # 创建AI导师实例（支持传入 model/base_url）
             try:
-                self.ai_mentor = AIMentor(API_URL, API_KEY, model=MODEL, base_url=BASE_URL)
+                self.ai_mentor = AIMentor(API_URL, api_key, model=MODEL, base_url=BASE_URL)
             except Exception:
                 # 兼容旧构造（若MODEL/BASE_URL不存在）
-                self.ai_mentor = AIMentor(API_URL, API_KEY)
+                self.ai_mentor = AIMentor(API_URL, api_key)
 
             print("[MainWindow] AI Mentor initialized successfully")
             return self.ai_mentor
@@ -2389,7 +3011,7 @@ class MainShell(QWidget):
                 QMessageBox.warning(
                     self,
                     "AI Mentor Not Configured",
-                    "AI Mentor is not configured.\n\nPlease create app/ai_config_local.py from app/ai_config_example.py and fill in your API key."
+                    "AI Mentor is not configured.\n\nPlease set API_KEY in app/ai_config_local.py."
                 )
                 return
             
@@ -2406,6 +3028,7 @@ class MainShell(QWidget):
             self.ai_mentor_widget.setVisible(True)
             self.content_title.setText("AI Nursing Mentor")
             self.content_title.setVisible(True)
+            self._refresh_student_inline_text_colors()
             
         except Exception as e:
             print(f"Error showing AI Mentor: {e}")
@@ -2419,9 +3042,9 @@ class MainShell(QWidget):
                 "Error",
                 "Failed to load AI Mentor.\n\n"
                 "Please ensure:\n"
-                "1. Create app/ai_config_local.py with your API key\n"
-                "2. Copy from app/ai_config_example.py\n"
-                "3. Fill in your actual API key"
+                "1. API_KEY is set in app/ai_config_local.py\n"
+                "2. MODEL / BASE_URL are set in app/ai_config_local.py\n"
+                "3. Restart the application"
             )
 
     def _save_practice_record(self, correct, total):
@@ -2521,12 +3144,15 @@ class MainShell(QWidget):
             content_l.insertWidget(2, self.simulation_container)
         
         self.simulation_container.setVisible(True)
+        self._refresh_student_inline_text_colors()
     def _hide_all_content_containers(self):
         """隐藏所有内容容器（Settings, Simulation, Practice, E-learning等）"""
         if hasattr(self, 'settings_container'):
             self.settings_container.setVisible(False)
         if hasattr(self, 'simulation_container'):
             self.simulation_container.setVisible(False)
+        if hasattr(self, 'student_home_container'):
+            self.student_home_container.setVisible(False)
         if hasattr(self, 'topic_container'):
             self.topic_container.setVisible(False)
         if hasattr(self, 'simulator_conn_widget'):
@@ -2653,6 +3279,7 @@ class MainShell(QWidget):
         
         # 默认显示摄像头设置
         self._show_camera_settings_tab()
+        self._refresh_student_inline_text_colors()
     
     def _show_camera_settings_tab(self):
         """显示摄像头设置标签"""
@@ -2697,6 +3324,7 @@ class MainShell(QWidget):
         
         self.settings_content_layout.addWidget(self.camera_manager_widget)
         self.camera_manager_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _show_font_settings_tab(self):
         """显示字体设置标签"""
@@ -2742,6 +3370,7 @@ class MainShell(QWidget):
         
         self.settings_content_layout.addWidget(self.settings_widget)
         self.settings_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _apply_font_globally(self, font_name):
         """Apply selected font to all UI elements"""
@@ -2822,16 +3451,16 @@ class MainShell(QWidget):
             conn_l.setSpacing(12)
             conn_l.setContentsMargins(0, 0, 0, 0)
             
-            # WiFi Section
+            # Hardware connection section
             wifi_frame = QFrame()
             wifi_frame.setStyleSheet("background: transparent;")
             wifi_l = QHBoxLayout(wifi_frame)
             
-            wifi_label = QLabel("Current WiFi:")
+            wifi_label = QLabel("Hardware Link:")
             wifi_label.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 700;")
             wifi_l.addWidget(wifi_label)
             
-            self.lbl_current_wifi = QLabel("Checking...")
+            self.lbl_current_wifi = QLabel("Checking hardware link...")
             self.lbl_current_wifi.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
             self.lbl_current_wifi.setMinimumWidth(250)
             wifi_l.addWidget(self.lbl_current_wifi)
@@ -2852,11 +3481,11 @@ class MainShell(QWidget):
                 QPushButton:hover { background: rgba(77, 163, 255, 0.4); }
                 QPushButton:pressed { background: rgba(77, 163, 255, 0.5); }
             """)
-            btn_refresh.clicked.connect(self._refresh_wifi_display)
+            btn_refresh.clicked.connect(self._refresh_serial_display)
             wifi_l.addWidget(btn_refresh)
             
-            # Auto connect to MCU WiFi
-            btn_connect_wifi = QPushButton("Connect MCU WiFi")
+            # Hardware setup hint
+            btn_connect_wifi = QPushButton("WiFi Setup")
             btn_connect_wifi.setStyleSheet("""
                 QPushButton {
                     background: rgba(77, 163, 255, 0.3);
@@ -2872,7 +3501,7 @@ class MainShell(QWidget):
                 QPushButton:hover { background: rgba(77, 163, 255, 0.4); }
                 QPushButton:pressed { background: rgba(77, 163, 255, 0.5); }
             """)
-            btn_connect_wifi.clicked.connect(self._connect_mcu_wifi)
+            btn_connect_wifi.clicked.connect(self._show_wired_hardware_hint)
             wifi_l.addWidget(btn_connect_wifi)
             wifi_l.addStretch()
             conn_l.addWidget(wifi_frame)
@@ -2915,9 +3544,58 @@ class MainShell(QWidget):
             content_l = self.content.layout()
             content_l.insertWidget(2, self.simulator_conn_widget)
         
-        # Refresh WiFi on display
-        self._refresh_wifi_display()
+        # Refresh hardware link on display
+        self._refresh_serial_display()
         self.simulator_conn_widget.setVisible(True)
+        self._refresh_student_inline_text_colors()
+
+    def _refresh_serial_display(self):
+        """Refresh the hardware transport status shown on the Simulator page."""
+        try:
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            if transport not in ("serial", "udp"):
+                transport = "udp"
+            if transport == "udp":
+                self.lbl_current_wifi.setText("WiFi UDP: surgeryBox -> 192.168.4.1:4210 (PC 4211)")
+                return
+
+            from app.hardware.serial_connector import list_serial_ports
+            preferred_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+            baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
+            ports = list_serial_ports()
+            if ports:
+                available = ", ".join(ports)
+                if preferred_port in ports:
+                    self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (available)")
+                else:
+                    self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (available: {available})")
+            else:
+                self.lbl_current_wifi.setText(f"{preferred_port} @ {baudrate} (no serial ports detected)")
+        except Exception as e:
+            self.lbl_current_wifi.setText(f"Hardware status error: {str(e)[:60]}")
+
+    def _show_wired_hardware_hint(self):
+        """Show hardware setup hints without changing system WiFi."""
+        try:
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            if transport == "serial":
+                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+                baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
+                text = (
+                    f"Serial mode: connect mannequin USB serial and camera to this PC. "
+                    f"Hardware port is {port} @ {baudrate}. "
+                    f"Set SURGERYBOX_HARDWARE_TRANSPORT=udp to use surgeryBox WiFi."
+                )
+            else:
+                text = (
+                    "WiFi/UDP mode: connect this PC to the surgeryBox WiFi. "
+                    "Password: 12345678. Board: 192.168.4.1:4210. "
+                    "The PC listens on UDP 4211 and sends Start/Winding directly to the MCU."
+                )
+            self.lbl_connection_status.setText(text)
+            self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
+        except Exception:
+            pass
     
     def _refresh_wifi_display(self):
         """Refresh WiFi display in background thread"""
@@ -2989,14 +3667,26 @@ class MainShell(QWidget):
             if hasattr(self, 'connection_thread') and self.connection_thread and self.connection_thread.isRunning():
                 return  # Already testing, ignore new request
             
-            # Start connection test in background thread
-            self.connection_thread = ConnectionTestThread()
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            if transport == "serial":
+                from app.hardware.serial_connector import SerialConnectionTestThread
+                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+                try:
+                    baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
+                except ValueError:
+                    baudrate = 115200
+                self.connection_thread = SerialConnectionTestThread(port, baudrate)
+                waiting_text = f"Testing serial connection on {port}..."
+            else:
+                from app.hardware_connector import ConnectionTestThread
+                self.connection_thread = ConnectionTestThread()
+                waiting_text = "Testing surgeryBox WiFi board at 192.168.4.1..."
             self.connection_thread.connection_result.connect(self._on_connection_result)
             self.connection_thread.finished.connect(lambda: self._cleanup_connection_thread())
             self.connection_thread.start()
             
             # Show waiting status
-            self.lbl_connection_status.setText("Testing connection...")
+            self.lbl_connection_status.setText(waiting_text)
             self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
         except Exception as e:
             self.lbl_connection_status.setText(f"✗ Error")

@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import os
 import time
+import socket
 from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QRect, QPoint, QUrl
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QPushButton
@@ -16,6 +17,69 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from app.camera_manager import CameraThread
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.training_records import get_training_record_manager
+
+
+class ExternalUDPListener(QThread):
+    """Receive line-based hardware telemetry from the ESP8266 UDP hotspot."""
+
+    message_received = Signal(str)
+
+    def __init__(self, board_ip: str, board_port: int, local_port: int):
+        super().__init__()
+        self.board_ip = board_ip
+        self.board_port = board_port
+        self.local_port = local_port
+        self.stop_flag = False
+        self.sock = None
+        self.ready = False
+        self.last_error = ""
+
+    def run(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.sock.bind(("", self.local_port))
+            self.sock.settimeout(1.0)
+            self.ready = True
+            try:
+                self.sock.sendto(b"HELLO_PC", (self.board_ip, self.board_port))
+            except Exception:
+                pass
+
+            while not self.stop_flag:
+                try:
+                    data, _ = self.sock.recvfrom(1024)
+                    if not data:
+                        continue
+                    text = data.decode(errors="replace").strip()
+                    if text:
+                        self.message_received.emit(text)
+                except socket.timeout:
+                    continue
+                except Exception as exc:
+                    if self.stop_flag:
+                        break
+                    self.last_error = str(exc)
+                    break
+        except Exception as exc:
+            self.last_error = str(exc)
+        finally:
+            self.ready = False
+            try:
+                if self.sock:
+                    self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+
+    def send_message(self, msg: str) -> bool:
+        try:
+            if not self.ready or not self.sock:
+                return False
+            self.sock.sendto(msg.encode(), (self.board_ip, self.board_port))
+            return True
+        except Exception as exc:
+            print(f"[External->MCU] Send error (listener socket): {exc}")
+            return False
 
 
 class SuccessDisplay:
@@ -363,6 +427,26 @@ class RemoveNeedleTraining(QWidget):
         print(f"[RemoveNeedleTraining] __init__ called with parent={parent}, mode={training_mode}")
         self.setObjectName("RemoveNeedleTraining")
         self.training_mode = training_mode  # "remove_needle_simulator" or "remove_needle_no_simulator"
+        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+        if self.hardware_transport not in ("udp", "off"):
+            self.hardware_transport = "udp"
+        self.use_hardware_pull = os.getenv("SURGERYBOX_USE_HARDWARE_PULL", "1").strip().lower() not in ("0", "false", "no", "off")
+        self.board_ip = os.getenv("SURGERYBOX_BOARD_IP", "192.168.4.1").strip() or "192.168.4.1"
+        try:
+            self.board_port = int(os.getenv("SURGERYBOX_BOARD_PORT", "4210"))
+        except ValueError:
+            self.board_port = 4210
+        try:
+            self.local_udp_port = int(os.getenv("SURGERYBOX_LOCAL_UDP_PORT", "4211"))
+        except ValueError:
+            self.local_udp_port = 4211
+        self.external_thread = None
+        self.external_pos_cm = 0.0
+        self.external_speed_cmps = 0.0
+        self.seq_info = ""
+        self.last_event_msg = ""
+        self.last_hardware_message_time = 0.0
+        self._last_position_message_time = 0.0
         
         # 初始化组件
         print(f"[RemoveNeedleTraining] Setting up UI")
@@ -462,6 +546,12 @@ class RemoveNeedleTraining(QWidget):
         self.text_display.setGeometry(0, 0, self.camera_display.width(), 200)
         self.text_display.setVisible(True)
         print(f"[RemoveNeedleTraining._setup_ui] text_display created")
+
+        self.info_overlay = QLabel(self.camera_display)
+        self.info_overlay.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.info_overlay.setStyleSheet("color: #00FF00; background: rgba(0,0,0,120); padding: 8px; font-size: 18px;")
+        self.info_overlay.setGeometry(10, 10, 460, 150)
+        self.info_overlay.setVisible(False)
         
         # 成功显示
         print(f"[RemoveNeedleTraining._setup_ui] Creating success_display")
@@ -474,6 +564,8 @@ class RemoveNeedleTraining(QWidget):
         print(f"[RemoveNeedleTraining.resizeEvent] New size: {self.width()} x {self.height()}")
         self.camera_display.setGeometry(0, 0, self.width(), self.height())
         self.text_display.setGeometry(0, 0, self.camera_display.width(), 200)
+        if hasattr(self, "info_overlay") and self.info_overlay:
+            self.info_overlay.setGeometry(10, 10, 460, 150)
     
     def _setup_camera(self):
         """设置摄像头"""
@@ -1568,11 +1660,202 @@ class RemoveNeedleTraining(QWidget):
         self.phase4_events_completed = 0  # 重置事件计数器
         self.hand_pinching_near_needle = False  # 重置手捏着的state
         self.training_start_time = time.time()  # 记录Phase 4开始时间
+        self.external_pos_cm = 0.0
+        self.external_speed_cmps = 0.0
+        self.last_hardware_message_time = 0.0
+        self.seq_info = ""
+        self.last_event_msg = ""
+        self._last_position_message_time = 0.0
         
         # 显示Phase 4指导文字
         guide_text = "Pull out the epidural catheter smoothly and steadily."
         self.text_display.set_text(guide_text)
         self.text_display.fade_in(duration_ms=500)
+        if self.use_hardware_pull and self.hardware_transport == "udp":
+            self._start_external_listener()
+            self._update_info_overlay()
+            QTimer.singleShot(1000, lambda: self._send_start_when_ready())
+
+    def _start_external_listener(self):
+        """Start UDP telemetry for camera + hardware training."""
+        if self.external_thread:
+            return
+
+        try:
+            self.external_thread = ExternalUDPListener(self.board_ip, self.board_port, self.local_udp_port)
+            self.external_thread.message_received.connect(self._on_external_message)
+            self.external_thread.start()
+            print(f"[External] UDP listener started on port {self.local_udp_port}")
+        except Exception as exc:
+            self.external_thread = None
+            self.last_event_msg = f"UDP listener failed: {exc}"
+            print(f"[External] Failed to start UDP listener: {exc}")
+            self._update_info_overlay()
+
+    def _hardware_ready(self):
+        return bool(self.external_thread and getattr(self.external_thread, "ready", False))
+
+    def _hardware_last_error(self):
+        try:
+            if self.external_thread:
+                return getattr(self.external_thread, "last_error", "")
+        except Exception:
+            return ""
+        return ""
+
+    def _send_start_when_ready(self, retries: int = 20):
+        """Send Start after the listener socket is bound, so MCU replies to PC port 4211."""
+        try:
+            if self._hardware_ready():
+                self._send_to_mcu("Start")
+                return
+        except Exception:
+            pass
+        if retries <= 0:
+            err = self._hardware_last_error()
+            print(f"[Hardware] UDP listener not ready, Start not sent. {err}".strip())
+            return
+        QTimer.singleShot(100, lambda: self._send_start_when_ready(retries - 1))
+
+    def _send_to_mcu(self, msg: str):
+        """Send one UDP command to the MCU, preferring the listener socket."""
+        if self.external_thread and self.external_thread.send_message(msg):
+            print(f"[External->MCU] Sent via listener: {msg}")
+            return True
+        try:
+            temp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            temp_sock.sendto(msg.encode(), (self.board_ip, self.board_port))
+            temp_sock.close()
+            print(f"[External->MCU] Sent via temp socket: {msg}")
+            return True
+        except Exception as exc:
+            print(f"[External->MCU] Send error: {exc}")
+            return False
+
+    def _on_external_message(self, msg: str):
+        """Apply MCU UDP telemetry to the camera training phase."""
+        print(f"[External] Received: {msg}")
+        self.last_hardware_message_time = time.time()
+        m = msg.lower().strip()
+
+        if m.startswith("seq:"):
+            self.seq_info = msg.split(":", 1)[1].strip()
+            self._apply_hardware_sequence(self.seq_info)
+            self._update_info_overlay()
+            return
+
+        if m.startswith(("dist:", "pull:", "pos:")):
+            try:
+                value = float(m.split(":", 1)[1])
+            except Exception:
+                return
+            self._handle_phase4_external_progress(value)
+            self._update_info_overlay()
+            return
+
+        if m.startswith("speed:"):
+            try:
+                self.external_speed_cmps = float(m.split(":", 1)[1])
+            except Exception:
+                return
+            self._update_info_overlay()
+            return
+
+        if m == "rewind_done" or m.startswith("error: rewind"):
+            self.last_event_msg = msg
+            self._update_info_overlay()
+            return
+
+        event_to_quiz = {
+            "pain": "Q3",
+            "pain2": "Q3",
+            "highdamp": "Q4",
+            "lowdamp": "Q5",
+            "keep": "Q5",
+        }
+        if m in event_to_quiz:
+            self.last_event_msg = msg
+            self._update_info_overlay()
+            self._trigger_hardware_quiz(event_to_quiz[m], m)
+
+    def _apply_hardware_sequence(self, seq_body: str):
+        """Use the MCU sequence distances for the UI trigger thresholds when available."""
+        try:
+            parts = [p.strip() for p in seq_body.split(",")]
+            if len(parts) < 5:
+                return
+            distances = [float(v) for v in parts[1:5]]
+            events_queue = [
+                (distances[0], "Q3"),
+                (distances[1], "Q3"),
+                (distances[2], "Q4"),
+                (distances[3], "Q5"),
+            ]
+            self.pull_config["events_queue"] = events_queue
+            print(f"[External] Applied MCU sequence: {events_queue}")
+        except Exception as exc:
+            print(f"[External] Failed to apply MCU sequence '{seq_body}': {exc}")
+
+    def _trigger_hardware_quiz(self, question_id: str, event_name: str):
+        """Trigger a quiz once when the MCU reports a physical event."""
+        if self.quiz_paused:
+            return
+        if not hasattr(self, "_hardware_events_seen"):
+            self._hardware_events_seen = set()
+        key = f"{event_name}:{question_id}:{len(self.events_results)}"
+        if key in self._hardware_events_seen:
+            return
+        self._hardware_events_seen.add(key)
+        if question_id == "Q3":
+            self._trigger_quiz_q3()
+        elif question_id == "Q4":
+            self._trigger_quiz_q4()
+        elif question_id == "Q5":
+            self._trigger_quiz_q5()
+
+    def _update_info_overlay(self):
+        try:
+            if not hasattr(self, "info_overlay") or not self.info_overlay:
+                return
+            if not (self.use_hardware_pull and self.hardware_transport == "udp" and self.current_phase == 3):
+                self.info_overlay.setVisible(False)
+                return
+            seq_line = f"Seq: {self.seq_info}" if self.seq_info else "Seq: waiting"
+            evt_line = f"Last Event: {self.last_event_msg}" if self.last_event_msg else "Last Event: none"
+            pos_line = f"Pos: {self.external_pos_cm:.2f} cm"
+            speed_line = f"Speed: {self.external_speed_cmps:.2f} cm/s"
+            self.info_overlay.setText("\n".join([seq_line, evt_line, pos_line, speed_line]))
+            self.info_overlay.setVisible(True)
+            self.info_overlay.raise_()
+        except Exception as exc:
+            print(f"[External] Failed to update info overlay: {exc}")
+
+    def _handle_phase4_external_progress(self, distance_cm: float):
+        """Update the camera AR needle from MCU distance telemetry."""
+        if self.current_phase != 3:
+            return
+        now = time.time()
+        last_msg_time = getattr(self, "_last_position_message_time", 0.0)
+        if last_msg_time and self.external_pos_cm:
+            dt = max(0.001, now - last_msg_time)
+            self.external_speed_cmps = (distance_cm - self.external_pos_cm) / dt
+        self._last_position_message_time = now
+
+        self.external_pos_cm = max(0.0, distance_cm)
+        self.needle_pulled_distance_cm = max(0.0, min(self.external_pos_cm, self.needle_full_length_cm))
+        self.needle_pulled_distance = (self.needle_pulled_distance_cm / self.needle_full_length_cm) * self.needle_full_length
+        self.max_pulled_distance_cm = max(self.max_pulled_distance_cm, self.needle_pulled_distance_cm)
+        self.max_pulled_distance = max(self.max_pulled_distance, self.needle_pulled_distance)
+
+    def _hardware_pull_active(self):
+        """Return True shortly after MCU telemetry arrives, making hardware authoritative."""
+        return (
+            self.use_hardware_pull
+            and self.hardware_transport == "udp"
+            and self.current_phase == 3
+            and self.last_hardware_message_time > 0
+            and time.time() - self.last_hardware_message_time < 2.0
+        )
     
     def _generate_pull_config(self):
         """
