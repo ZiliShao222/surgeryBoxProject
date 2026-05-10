@@ -125,3 +125,41 @@ python udp_flow_tester.py --mcu-ip 192.168.4.1 --mcu-port 4210 --local-port 4211
 4. 如果要规划最终有线训练站、人体模型内硬件、外部摄像头和上位机，读 [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md)。
 5. 如果要改训练流程或 UI，读 [docs/simulator-training-flow.md](docs/simulator-training-flow.md)。
 6. 如果要处理数据、AI、发布和维护，读 [docs/data-ai-and-maintenance.md](docs/data-ai-and-maintenance.md)。
+
+## IMU 体位检测
+
+桌面端现已支持高精度 IMU 姿态传感器的侧卧体位提示。进入拔管训练页面后，程序会读取 IMU 串口数据，解析欧拉角 `roll / pitch / yaw`，并在页面中央显示：
+
+```text
+体位合格：已侧卧
+体位未达标：请调整为侧卧位
+```
+
+默认连接参数：
+
+| 项目 | 默认值 |
+| --- | --- |
+| 串口 | `COM3` |
+| 波特率 | `115200` |
+| 判断轴 | `roll` |
+| 合格范围 | `abs(roll)` 在 `70°` 到 `110°` 之间 |
+
+运行前请先关闭 `UartAssist` 等串口助手，否则训练页面无法打开 `COM3`。
+
+如果传感器侧放后仍然显示未达标，可能是安装方向导致侧卧变化体现在 `pitch` 上。启动桌面端前可以设置：
+
+```powershell
+$env:IMU_AXIS="pitch"
+```
+
+也可以修改串口号：
+
+```powershell
+$env:IMU_PORT="COM4"
+```
+
+独立传感器测试脚本：
+
+```powershell
+python tools/imu_posture_tester.py --port COM3
+```

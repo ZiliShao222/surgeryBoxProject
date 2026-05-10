@@ -78,6 +78,7 @@ class ExternalUDPListener(QThread):
 
 from app.camera_manager import CameraThread
 from app.hand_gesture_recognizer import HandGestureRecognizer
+from app.imu_posture_reader import ImuPostureThread
 from app.training_records import get_training_record_manager
 
 
@@ -446,6 +447,17 @@ class RemoveNeedleTraining(QWidget):
         self.last_event_msg = ""
         self.info_overlay = None
         self.external_speed_cmps = 0.0
+        # IMU posture sensor. Defaults match the sensor tested on COM3/115200.
+        self.imu_thread = None
+        self.imu_port = os.environ.get("IMU_PORT", "COM3")
+        self.imu_baud = int(os.environ.get("IMU_BAUD", "115200"))
+        self.imu_axis = os.environ.get("IMU_AXIS", "roll").lower()
+        self.posture_status = "WAITING"
+        self.posture_roll = 0.0
+        self.posture_pitch = 0.0
+        self.posture_yaw = 0.0
+        self.posture_angle = 0.0
+        self.posture_overlay = None
         
         # 初始化组件
         print(f"[RemoveNeedleTraining] Setting up UI")
@@ -454,6 +466,8 @@ class RemoveNeedleTraining(QWidget):
         self._setup_camera()
         print(f"[RemoveNeedleTraining] Setting up hand detector")
         self._setup_hand_detector()
+        print(f"[RemoveNeedleTraining] Starting IMU posture listener")
+        self._start_imu_posture_listener()
         
         # 状态管理
         self.current_phase = 0
@@ -553,17 +567,110 @@ class RemoveNeedleTraining(QWidget):
         self.info_overlay.setGeometry(10, 10, 420, 160)
         self.info_overlay.setVisible(True)
 
+        self.posture_overlay = QLabel(self.camera_display)
+        self.posture_overlay.setAlignment(Qt.AlignCenter)
+        self.posture_overlay.setWordWrap(True)
+        self.posture_overlay.setVisible(True)
+        self._layout_posture_overlay()
+        self._set_posture_overlay("WAITING", 0.0, 0.0, 0.0)
+
         # 成功显示
         print(f"[RemoveNeedleTraining._setup_ui] Creating success_display")
         self.success_display = SuccessDisplay(self.camera_display)
         print(f"[RemoveNeedleTraining._setup_ui] Complete")
     
+    def _layout_posture_overlay(self):
+        if not self.posture_overlay:
+            return
+        width = min(720, max(360, int(self.camera_display.width() * 0.72)))
+        height = 150
+        x = max(0, (self.camera_display.width() - width) // 2)
+        y = max(80, (self.camera_display.height() - height) // 2)
+        self.posture_overlay.setGeometry(x, y, width, height)
+
+    def _set_posture_overlay(self, status: str, roll: float, pitch: float, yaw: float):
+        if not self.posture_overlay:
+            return
+        if status == "OK":
+            title = "体位合格：已侧卧"
+            detail = f"roll {roll:.1f}°  pitch {pitch:.1f}°  yaw {yaw:.1f}°"
+            color = "#0F7A3A"
+            border = "#24C66B"
+            bg = "rgba(230, 255, 239, 220)"
+        elif status == "BAD":
+            title = "体位未达标：请调整为侧卧位"
+            detail = f"roll {roll:.1f}°  pitch {pitch:.1f}°  yaw {yaw:.1f}°"
+            color = "#9A1B1B"
+            border = "#FF5A5A"
+            bg = "rgba(255, 238, 238, 225)"
+        elif status == "ERROR":
+            title = "未连接体位传感器"
+            detail = "请关闭串口助手，确认 COM 口和 Type-C 连接"
+            color = "#8A5A00"
+            border = "#F5B942"
+            bg = "rgba(255, 249, 224, 225)"
+        else:
+            title = "正在等待体位传感器"
+            detail = f"端口 {self.imu_port}，请保持传感器连接"
+            color = "#24415F"
+            border = "#6EA8D9"
+            bg = "rgba(235, 246, 255, 220)"
+        self.posture_overlay.setText(f"{title}\n{detail}")
+        self.posture_overlay.setStyleSheet(f"""
+            QLabel {{
+                color: {color};
+                background: {bg};
+                border: 3px solid {border};
+                border-radius: 8px;
+                padding: 18px;
+                font-family: 'Microsoft YaHei', 'Segoe UI', Arial;
+                font-size: 28px;
+                font-weight: 700;
+            }}
+        """)
+        self.posture_overlay.raise_()
+
+    def _start_imu_posture_listener(self):
+        if self.imu_thread:
+            return
+        try:
+            self.imu_thread = ImuPostureThread(
+                port=self.imu_port,
+                baud=self.imu_baud,
+                axis=self.imu_axis,
+                min_deg=70.0,
+                max_deg=110.0,
+                parent=self,
+            )
+            self.imu_thread.posture_changed.connect(self._on_imu_posture_changed)
+            self.imu_thread.error.connect(self._on_imu_posture_error)
+            self.imu_thread.start()
+            print(f"[IMU] Posture listener started on {self.imu_port} at {self.imu_baud}")
+        except Exception as e:
+            self._on_imu_posture_error(str(e))
+
+    def _on_imu_posture_changed(self, status: str, roll: float, pitch: float, yaw: float, angle: float):
+        self.posture_status = status
+        self.posture_roll = roll
+        self.posture_pitch = pitch
+        self.posture_yaw = yaw
+        self.posture_angle = angle
+        self._set_posture_overlay(status, roll, pitch, yaw)
+        self._update_info_overlay()
+
+    def _on_imu_posture_error(self, message: str):
+        print(f"[IMU] {message}")
+        self.posture_status = "ERROR"
+        self._set_posture_overlay("ERROR", 0.0, 0.0, 0.0)
+        self._update_info_overlay()
+
     def resizeEvent(self, event):
         """窗口大小改变时更新camera_display"""
         super().resizeEvent(event)
         print(f"[RemoveNeedleTraining.resizeEvent] New size: {self.width()} x {self.height()}")
         self.camera_display.setGeometry(0, 0, self.width(), self.height())
         self.text_display.setGeometry(0, 0, self.camera_display.width(), 200)
+        self._layout_posture_overlay()
     
     def _setup_camera(self):
         """设置摄像头"""
@@ -1785,11 +1892,16 @@ class RemoveNeedleTraining(QWidget):
                 return
             seq_line = f"Seq: {self.seq_info}" if self.seq_info else "Seq: (waiting)"
             evt_line = f"Last Event: {self.last_event_msg}" if self.last_event_msg else "Last Event: (none)"
-            pos_val = self.external_pos_cm if self.external_pos_cm else self.needle_pulled_distance_cm
-            speed_val = self.external_speed_cmps if self.external_speed_cmps else self.current_speed_cmps
+            pos_val = self.external_pos_cm if self.external_pos_cm else getattr(self, "needle_pulled_distance_cm", 0.0)
+            speed_val = self.external_speed_cmps if self.external_speed_cmps else getattr(self, "current_speed_cmps", 0.0)
             pos_line = f"Pos: {pos_val:.2f} cm"
             speed_line = f"Speed: {speed_val:.2f} cm/s"
-            overlay_text = "\n".join([seq_line, evt_line, pos_line, speed_line])
+            posture = getattr(self, "posture_status", "WAITING")
+            posture_line = (
+                f"Posture: {posture} "
+                f"({getattr(self, 'imu_axis', 'roll')}={getattr(self, 'posture_angle', 0.0):.1f} deg)"
+            )
+            overlay_text = "\n".join([seq_line, evt_line, pos_line, speed_line, posture_line])
             self.info_overlay.setText(overlay_text)
         except Exception as e:
             print(f"[External] Failed to update info overlay: {e}")
@@ -2290,6 +2402,18 @@ class RemoveNeedleTraining(QWidget):
                 pass
             
             # 停止阶段计时器
+            try:
+                if self.imu_thread:
+                    print("[IMU] Stopping posture listener")
+                    self.imu_thread.stop_flag = True
+                    try:
+                        self.imu_thread.wait(1000)
+                    except Exception:
+                        pass
+                    self.imu_thread = None
+            except Exception:
+                pass
+
             if self.phase_timer:
                 print(f"[RemoveNeedleTraining.cleanup] Stopping phase_timer")
                 self.phase_timer.stop()
