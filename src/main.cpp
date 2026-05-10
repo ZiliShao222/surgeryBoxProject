@@ -6,6 +6,7 @@
 #include "events.h"
 #include "config.h"
 #include "signal_tester.h"
+#include "imu_bridge.h"
 
 void setup() {
     Serial.begin(115200);
@@ -19,6 +20,7 @@ void setup() {
     motorInit();            // Motor
     eventsInit();           // Random distance arrays
     signalTesterInit();     // Serial-to-UDP passthrough
+    imuBridgeInit();        // IMU transparent bridge: sensor -> ESP8266 -> COM3
 }
 
 void loop() {
@@ -55,4 +57,5 @@ void loop() {
     }
 
     signalTesterLoop();
+    imuBridgeLoop();
 }

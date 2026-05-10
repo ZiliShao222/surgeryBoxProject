@@ -3,6 +3,7 @@
 #include "motor.h"
 #include "events.h"
 #include "encoder.h"
+#include "imu_bridge.h"
 
 WiFiUDP Udp;
 uint16_t localPort;
@@ -98,6 +99,7 @@ void waitForCmd(const String& target) {
             Serial.printf("[WiFi UDP] WaitForCmd got: %s\n", msg.c_str());
             if (msg == target) return;
         }
+        imuBridgeLoop();
         delay(10);
     }
 }
@@ -111,6 +113,7 @@ String waitForCmdAny(std::initializer_list<String> targets) {
                 if (msg == t) return msg;
             }
         }
+        imuBridgeLoop();
         delay(10);
     }
 }
@@ -118,6 +121,7 @@ String waitForCmdAny(std::initializer_list<String> targets) {
 void waitShortPull() {
     float startDist = readDistance();
     while (readDistance() < startDist + 0.5) {
+        imuBridgeLoop();
         delay(10);
     }
 }

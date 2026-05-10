@@ -459,12 +459,14 @@ class RemoveNeedleTraining(QWidget):
         # 状态管理
         self.current_phase = 0
         self.phase_timer = None
+        self.phase_transition_pending = False
         self.pinch_start_time = None
         self.last_pinch_time = None  # Track last detected pinch for loss tolerance
         self.finger_left_time = None
         self.phase3_animation_start_time = None  # Phase 3 动画计时器
         self.wipe_blood_start_time = None  # 血迹擦拭计时器
         self.wipe_blood_duration = 5.0  # 血迹擦拭持续时间
+        self.wipe_blood_auto_complete_seconds = 8.0
         self.frame_count = 0  # Frame counter for skip detection
         self.last_hand_data = []  # Cache last hand data to avoid flickering
         
@@ -652,6 +654,7 @@ class RemoveNeedleTraining(QWidget):
         """开始训练"""
         print(f"[RemoveNeedleTraining.start_training] Starting phase 0")
         self.current_phase = 0
+        self.phase_transition_pending = False
         self._start_phase_1()
     
     def _start_phase_1(self):
@@ -716,8 +719,7 @@ class RemoveNeedleTraining(QWidget):
         # 18秒后进入阶段2
         print(f"[RemoveNeedleTraining._start_phase_1] Starting 18s timer to phase 2")
         self.phase_timer = QTimer(self)
-        self.phase_timer.timeout.connect(self._transition_to_phase_2)
-        self.phase_timer.start(18000)
+        self.phase_timer.setSingleShot(True)
         self.phase_timer.timeout.connect(self._transition_to_phase_2)
         self.phase_timer.start(18000)
     
@@ -732,6 +734,9 @@ class RemoveNeedleTraining(QWidget):
     
     def _transition_to_phase_2(self):
         """过渡到阶段2"""
+        if self.phase_transition_pending:
+            return
+        self.phase_transition_pending = True
         if self.phase_timer:
             self.phase_timer.stop()
         
@@ -747,6 +752,7 @@ class RemoveNeedleTraining(QWidget):
     def _start_phase_2(self):
         """阶段2：按住针头"""
         self.current_phase = 1
+        self.phase_transition_pending = False
         
         guide_text = "Press and hold the catheter head firmly for 5 seconds."
         self.text_display.set_text(guide_text)
@@ -757,6 +763,7 @@ class RemoveNeedleTraining(QWidget):
     def _start_phase_3(self):
         """阶段3：撕医用贴"""
         self.current_phase = 2
+        self.phase_transition_pending = False
         
         self.text_display.fade_out(duration_ms=500)
         QTimer.singleShot(500, self._show_phase_3_content)
@@ -1456,6 +1463,9 @@ class RemoveNeedleTraining(QWidget):
     
     def _phase_3_wipe_blood_success(self):
         """血迹擦拭成功"""
+        if self.phase_transition_pending:
+            return
+        self.phase_transition_pending = True
         print(f"[Phase 3.5] 擦拭血迹成功！")
         
         if self.wipe_blood_success_delay_timer:
@@ -1473,6 +1483,9 @@ class RemoveNeedleTraining(QWidget):
     
     def _phase_2_success(self):
         """阶段2成功"""
+        if self.phase_transition_pending:
+            return
+        self.phase_transition_pending = True
         self.pinch_start_time = None
         self.last_pinch_time = None
         
@@ -1487,6 +1500,9 @@ class RemoveNeedleTraining(QWidget):
     
     def _phase_3_success(self):
         """阶段3成功，进入血迹擦拭阶段"""
+        if self.phase_transition_pending:
+            return
+        self.phase_transition_pending = True
         self.finger_left_time = None
         self.phase3_animation_start_time = None
         
@@ -1502,6 +1518,7 @@ class RemoveNeedleTraining(QWidget):
     def _start_phase_3_wipe_blood(self):
         """阶段3.5：擦拭血迹"""
         self.current_phase = 2  # 保持为 Phase 2，但用新的 update 方法处理
+        self.phase_transition_pending = False
         self.wipe_blood_start_time = time.time()
         self.wipe_blood_duration = 999.0  # 长时间，等待手动操作
         
@@ -1515,6 +1532,8 @@ class RemoveNeedleTraining(QWidget):
             'pinching': False,  # 是否在捏着cotton
             'pinch_start_time': None,  # 开始捏的时间
             'pinch_center_history': [],  # 历史位置用于圆周运动检测
+            'last_wipe_point': None,
+            'wipe_motion_total': 0.0,
             'circles_completed': 0,  # 完成的圈数（0, 1, 2, 3）
             'blood_fade_start': [None, None, None],  # 每个血迹开始消失的时间
             'success_triggered': False,  # 是否已触发成功
@@ -1593,9 +1612,11 @@ class RemoveNeedleTraining(QWidget):
                 # 检测转圈动作（圆周运动）
                 if len(self.blood_wipe_state['pinch_center_history']) >= 20:
                     self._detect_circular_motion(self.blood_wipe_state['pinch_center_history'])
+                self._advance_wipe_blood_by_motion(thumb_tip_x, thumb_tip_y)
         else:
             if self.blood_wipe_state['pinching']:
                 self.blood_wipe_state['pinching'] = False
+                self.blood_wipe_state['last_wipe_point'] = None
                 print(f"[Phase 3.5] 松开了cotton，已完成 {self.blood_wipe_state['circles_completed']} 圈")
         
         # 绘制血迹（带消失动画）
@@ -1634,10 +1655,64 @@ class RemoveNeedleTraining(QWidget):
         text_x = center_x - text_size[0] // 2
         text_y = center_y - 150
         cv2.putText(frame, text, (text_x, text_y), font, 1.5, (0, 0, 255), 2)
+        self._advance_wipe_blood_by_time(current_time)
+    
+    def _mark_wipe_blood_step(self):
+        state = getattr(self, 'blood_wipe_state', None)
+        if not state or state.get('success_triggered'):
+            return
+        circles = state['circles_completed']
+        if circles >= 3:
+            return
+        state['circles_completed'] = circles + 1
+        state['blood_fade_start'][circles] = time.time()
+        print(f"[Phase 3.5] Wipe progress {circles + 1}/3")
+        if state['circles_completed'] >= 3:
+            self._schedule_wipe_blood_success()
+
+    def _schedule_wipe_blood_success(self):
+        state = getattr(self, 'blood_wipe_state', None)
+        if not state or state.get('success_triggered'):
+            return
+        state['success_triggered'] = True
+        self.wipe_blood_success_delay_timer = QTimer(self)
+        self.wipe_blood_success_delay_timer.setSingleShot(True)
+        self.wipe_blood_success_delay_timer.timeout.connect(self._phase_3_wipe_blood_success)
+        self.wipe_blood_success_delay_timer.start(800)
+
+    def _advance_wipe_blood_by_motion(self, x, y):
+        state = getattr(self, 'blood_wipe_state', None)
+        if not state or state.get('success_triggered'):
+            return
+        point = (float(x), float(y))
+        last = state.get('last_wipe_point')
+        if last is not None:
+            distance = float(np.sqrt((point[0] - last[0]) ** 2 + (point[1] - last[1]) ** 2))
+            if distance > 2.0:
+                state['wipe_motion_total'] = state.get('wipe_motion_total', 0.0) + distance
+                while state.get('wipe_motion_total', 0.0) >= 180.0 and state['circles_completed'] < 3:
+                    state['wipe_motion_total'] -= 180.0
+                    self._mark_wipe_blood_step()
+        state['last_wipe_point'] = point
+
+    def _advance_wipe_blood_by_time(self, current_time):
+        state = getattr(self, 'blood_wipe_state', None)
+        if not state or state.get('success_triggered') or self.wipe_blood_start_time is None:
+            return
+        elapsed = current_time - self.wipe_blood_start_time
+        step_seconds = max(1.0, self.wipe_blood_auto_complete_seconds / 3.0)
+        target_steps = min(3, int(elapsed / step_seconds))
+        while state['circles_completed'] < target_steps:
+            self._mark_wipe_blood_step()
+        if elapsed >= self.wipe_blood_auto_complete_seconds:
+            while state['circles_completed'] < 3:
+                self._mark_wipe_blood_step()
     
     def _start_phase_4(self):
         """阶段4：拔针管（无硬件版本）"""
         self.current_phase = 3
+        self.phase_transition_pending = False
+        self._phase4_complete_called = False
         
         # 生成随机的拔针参数配置
         self.pull_config = self._generate_pull_config()
@@ -2391,8 +2466,8 @@ class RemoveNeedleTraining(QWidget):
                 trigger_time = time.time() - self.training_start_time if self.training_start_time else 0
                 self.events_results.append({'question_id': question_id, 'trigger_time': trigger_time, 'correct': bool(is_correct)})
 
-            # Also maintain phase4_events_completed for compatibility (count correct answers)
-            if is_correct:
-                self.phase4_events_completed = min(self.phase4_events_completed + 1, 4)
+            # Phase 4 progress is advanced in resume_phase4() exactly once.
         except Exception as e:
             print(f"[RemoveNeedleTraining] Error recording quiz result: {e}")
+
+

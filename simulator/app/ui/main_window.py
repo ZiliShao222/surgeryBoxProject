@@ -3135,7 +3135,7 @@ class StudentShell(QWidget):
                         background: rgba(77, 163, 255, 0.4);
                     }
                 """)
-                btn.clicked.connect(lambda checked, key=option_key: self._on_training_button_click(key))
+                btn.clicked.connect(lambda _checked=False, key=option_key: self._on_training_button_click(key))
                 button_layout.addWidget(btn)
             
             # Add to content area
@@ -3705,3 +3705,4 @@ class StudentShell(QWidget):
                 self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #FF0000; font-weight: 700;")
         except Exception:
             pass
+

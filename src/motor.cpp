@@ -1,6 +1,7 @@
 #include "motor.h"
 #include "encoder.h"
 #include "servo_brake.h"
+#include "imu_bridge.h"
 #include <Arduino.h>
 
 #define MOTOR_PIN_A D7
@@ -33,6 +34,7 @@ void motorWindBack() {
     Serial.println("[Motor] Winding back...");
     while (readDistance() > 0.5) {
         motorReverse();
+        imuBridgeLoop();
         delay(50);
     }
     motorStop();

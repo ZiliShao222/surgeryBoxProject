@@ -45,7 +45,7 @@ surgeryBoxProject/
 
 ## 一句话架构
 
-ESP8266 固件创建 `surgeryBox` WiFi 热点，通过编码器检测导管拉出距离，控制舵机刹车和回卷电机，并通过 UDP 向桌面端发送 `Pain`、`HighDamp`、`LowDamp` 等事件；PySide6 桌面端负责训练 UI、Quiz、记录、学习材料和 AI 导师。
+ESP8266 固件创建 `surgeryBox` WiFi 热点，通过编码器检测导管拉出距离，控制舵机刹车和回卷电机，并通过 UDP 向桌面端发送 `Pain`、`HighDamp`、`LowDamp` 等事件；PySide6 桌面端负责训练 UI、Quiz、记录、学习材料和 AI 导师。当前 IMU 侧卧体位检测采用统一主控接入：IMU 接到 ESP8266，ESP8266 再通过 USB 串口 `COM3` 转发给桌面端。
 
 ## 常用运行命令
 
@@ -125,3 +125,54 @@ python udp_flow_tester.py --mcu-ip 192.168.4.1 --mcu-port 4210 --local-port 4211
 4. 如果要规划最终有线训练站、人体模型内硬件、外部摄像头和上位机，读 [docs/mobile-hardware-camera-architecture.md](docs/mobile-hardware-camera-architecture.md)。
 5. 如果要改训练流程或 UI，读 [docs/simulator-training-flow.md](docs/simulator-training-flow.md)。
 6. 如果要处理数据、AI、发布和维护，读 [docs/data-ai-and-maintenance.md](docs/data-ai-and-maintenance.md)。
+
+## IMU 体位检测
+
+桌面端现已支持高精度 IMU 姿态传感器的侧卧体位提示。进入拔管训练页面后，程序会从 ESP8266 的 USB 串口读取 IMU 原始数据，解析欧拉角 `roll / pitch / yaw`，并在页面中央显示：
+
+```text
+已侧卧
+未侧卧，请将病人调整成侧卧状态
+```
+
+默认连接参数：
+
+| 项目 | 默认值 |
+| --- | --- |
+| 串口 | `COM3` |
+| 波特率 | `115200` |
+| 判断轴 | `roll` |
+| 合格范围 | `abs(roll)` 在 `55°` 到 `125°` 之间 |
+
+当前 ESP8266 接线：
+
+| IMU | ESP8266 Wemos D1 |
+| --- | --- |
+| `3V3` | `3.3V`，可与其他模块共用 |
+| `GND` | `GND`，可与其他模块共用 |
+| `TX` | `D1` |
+| `RX` | 暂不接 |
+
+`D5/D6` 已用于编码器，`D7/D8` 已用于电机，`D2` 已用于刹车舵机；IMU 不要接这些脚。
+
+训练开始前需要连续保持侧卧 3 秒才会进入下一步。训练过程中如果检测到不再侧卧，当前任务会暂停并提示调整体位；重新侧卧并保持 3 秒后，会继续之前的任务进度。
+
+运行前请先关闭 `UartAssist`、PlatformIO 串口监视器等串口工具，否则训练页面无法打开 `COM3`。
+
+如果传感器侧放后仍然显示未达标，可能是安装方向导致侧卧变化体现在 `pitch` 上。启动桌面端前可以设置：
+
+```powershell
+$env:IMU_AXIS="pitch"
+```
+
+也可以修改串口号：
+
+```powershell
+$env:IMU_PORT="COM4"
+```
+
+独立传感器测试脚本：
+
+```powershell
+python tools/imu_posture_tester.py --port COM3
+```
