@@ -55,21 +55,34 @@ void handleUDPMessages() {
                   lastRemoteIp.toString().c_str(),
                   lastRemotePort,
                   msg.c_str());
+    handleHardwareCommand(msg, true);
+}
 
-    // Echo back for monitoring
-    sendUDPMessageToLast(msg);
+void handleHardwareCommand(const String& rawMsg, bool echoToUdp) {
+    String msg = rawMsg;
+    msg.trim();
+    if (msg.length() == 0) return;
+
+    if (echoToUdp) {
+        sendUDPMessageToLast(msg);
+    }
 
     if (msg == "Start") {
         startEventSequence();
-        sendUDPMessageToLast("ACK: Start");
+        if (echoToUdp) sendUDPMessageToLast("ACK: Start");
+        Serial.println("ACK: Start");
     } else if (msg == "Stop") {
         servoBrakeLock();
-        sendUDPMessageToLast("ACK: Stop");
+        if (echoToUdp) sendUDPMessageToLast("ACK: Stop");
+        Serial.println("ACK: Stop");
     } else if (msg == "Winding") {
-        motorWindBack();
-        sendUDPMessageToLast("ACK: Winding");
+        if (echoToUdp) sendUDPMessageToLast("ACK: Winding");
+        Serial.println("ACK: Winding");
+        bool ok = motorWindBack();
+        if (echoToUdp) sendUDPMessageToLast(ok ? "REWIND_DONE" : "ERROR: REWIND_TIMEOUT");
     } else {
-        sendUDPMessageToLast("ACK: " + msg);
+        if (echoToUdp) sendUDPMessageToLast("ACK: " + msg);
+        Serial.println(String("ACK: ") + msg);
     }
 }
 
@@ -88,6 +101,7 @@ void sendUDPMessageToLast(const String& msg) {
 
 void sendSignal(const String& sig) {
     sendUDPMessageToLast(sig);
+    Serial.println(sig);
     Serial.printf("[WiFi UDP] Signal sent: %s\n", sig.c_str());
 }
 

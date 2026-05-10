@@ -2,7 +2,7 @@
 #define MOTOR_H
 
 void motorInit();
-void motorWindBack();
+bool motorWindBack();
 void motorStop();
 
 #endif

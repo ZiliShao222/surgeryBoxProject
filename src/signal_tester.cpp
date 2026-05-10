@@ -5,23 +5,21 @@
 String serialInputBuffer = "";
 
 void signalTesterInit() {
-    Serial.println("[SignalTester] Ready. Type a message in Serial Monitor to send via WiFi.");
-    Serial.println("[SignalTester] Example: Pain / OK1 / Start");
+    Serial.println("[SignalTester] Ready. Type a command in Serial Monitor.");
+    Serial.println("[SignalTester] Example: Start / Stop / Winding / OK / OK1 / Continue / OK2");
 }
 
 void signalTesterLoop() {
     while (Serial.available()) {
         char c = Serial.read();
 
-        // 如果输入的是回车或换行，则发送
         if (c == '\n' || c == '\r') {
             if (serialInputBuffer.length() > 0) {
-                sendUDPMessageToLast(serialInputBuffer); // UDP发给最近的客户端
-                Serial.printf("[SignalTester] Sent: %s", serialInputBuffer.c_str());
+                handleHardwareCommand(serialInputBuffer, false);
+                Serial.printf("[SignalTester] Command handled: %s\n", serialInputBuffer.c_str());
                 serialInputBuffer = "";
             }
         } else {
-            // 累加到缓冲区
             serialInputBuffer += c;
         }
     }

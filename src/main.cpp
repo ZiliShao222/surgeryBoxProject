@@ -48,8 +48,12 @@ void loop() {
             if (sequenceRunning) {
                 float posCm = dist * 100.0f;
                 float speedCmps = speed * 100.0f;
-                sendUDPMessageToLast("POS:" + String(posCm, 2));
-                sendUDPMessageToLast("SPEED:" + String(speedCmps, 2));
+                String posMsg = "POS:" + String(posCm, 2);
+                String speedMsg = "SPEED:" + String(speedCmps, 2);
+                sendUDPMessageToLast(posMsg);
+                sendUDPMessageToLast(speedMsg);
+                Serial.println(posMsg);
+                Serial.println(speedMsg);
             }
         }
     }

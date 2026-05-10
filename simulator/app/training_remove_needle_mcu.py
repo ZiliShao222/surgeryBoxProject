@@ -450,6 +450,7 @@ class RemoveNeedleTraining(QWidget):
         except ValueError:
             self.serial_baudrate = 115200
         self.serial_thread = None
+        self.auto_rewind_after_training = os.getenv("SURGERYBOX_AUTO_REWIND", "1").strip().lower() not in ("0", "false", "no")
         self.external_event_flags = []
         # 速度显示相关（MCU模式）
         self.speed_display_end = 0.0
@@ -1830,6 +1831,10 @@ class RemoveNeedleTraining(QWidget):
             except Exception:
                 pass
         # 根据MCU信号映射到预设距离
+        if m == "rewind_done" or m.startswith("error: rewind"):
+            self.last_event_msg = msg
+            self._update_info_overlay()
+            return
         mapping = {
             "pain": 5.0,
             "pain2": 10.0,
@@ -2328,9 +2333,25 @@ class RemoveNeedleTraining(QWidget):
             traceback.print_exc()
         
         # 清理资源并发出完成信号
+        self._request_hardware_rewind()
         self.cleanup()
         self.training_completed.emit()
     
+    def _request_hardware_rewind(self):
+        """Ask the MCU to rewind after simulator-backed training finishes."""
+        if not self.auto_rewind_after_training:
+            print("[Hardware] Auto rewind disabled by SURGERYBOX_AUTO_REWIND")
+            return
+        if self.training_mode != "remove_needle_simulator":
+            return
+        try:
+            if self._send_hardware_message("Winding"):
+                print("[Hardware] Auto rewind requested after training")
+            else:
+                print("[Hardware] Auto rewind request skipped; hardware transport not ready")
+        except Exception as e:
+            print(f"[Hardware] Auto rewind request failed: {e}")
+
     def cleanup(self):
         """清理资源"""
         try:

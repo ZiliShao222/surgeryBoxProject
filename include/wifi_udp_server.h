@@ -16,6 +16,7 @@ void handleHttpServer();
 
 // 循环调用，处理收到的UDP数据（Start/Stop/Winding）
 void handleUDPMessages();
+void handleHardwareCommand(const String& msg, bool echoToUdp);
 
 // 主动向某IP/端口发送消息
 void sendUDPMessage(const IPAddress& ip, uint16_t port, const String& msg);

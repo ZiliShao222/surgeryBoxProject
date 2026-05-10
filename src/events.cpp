@@ -32,6 +32,8 @@ void eventsInit() {
 }
 
 void startEventSequence() {
+    resetEncoder();
+    servoBrakeRelease();
     int idx = random(0, 10);
     for (int i = 0; i < 4; i++) {
         currentArray[i] = distanceArrays[idx][i];
@@ -47,6 +49,7 @@ void startEventSequence() {
                     String(currentArray[2] * 100.0f, 2) + "," +
                     String(currentArray[3] * 100.0f, 2);
     sendUDPMessageToLast(seqMsg);
+    Serial.println(seqMsg);
 }
 
 void runTestFlow() {
