@@ -11,6 +11,8 @@ from PySide6.QtGui import QFont, QColor, QIcon
 import os
 from datetime import datetime
 
+from app.i18n import tr
+
 
 class ChatMessage(QFrame):
     """单条聊天消息"""
@@ -81,7 +83,7 @@ class AIMentorWidget(QWidget):
                 if paths:
                     self.ai_mentor.load_context_files(paths)
                     # add a small assistant message to confirm
-                    self._add_message('Loaded reading and quiz materials into context.', is_user=False)
+                    self._add_message(tr("mentor.loaded_context"), is_user=False)
         except Exception:
             pass
     
@@ -92,20 +94,17 @@ class AIMentorWidget(QWidget):
         main_layout.setSpacing(12)
         
         # Title
-        title = QLabel("🤖 AI Nursing Mentor")
-        title.setFont(QFont('Segoe Print', 16, QFont.Bold))
-        title.setStyleSheet("color: #003366; padding: 12px;")
-        main_layout.addWidget(title)
+        self.title_label = QLabel(tr("mentor.title"))
+        self.title_label.setFont(QFont('Segoe Print', 16, QFont.Bold))
+        self.title_label.setStyleSheet("color: #003366; padding: 12px;")
+        main_layout.addWidget(self.title_label)
         
         # 说明文字
-        description = QLabel(
-            "I am an AI nursing mentor to help you understand best practices for catheter care.\n"
-            "Ask questions about catheter removal procedures, safety, and nursing guidance."
-        )
-        description.setFont(QFont('Segoe Print', 10))
-        description.setStyleSheet("color: #666666; padding: 0 12px;")
-        description.setWordWrap(True)
-        main_layout.addWidget(description)
+        self.description_label = QLabel(tr("mentor.description"))
+        self.description_label.setFont(QFont('Segoe Print', 10))
+        self.description_label.setStyleSheet("color: #666666; padding: 0 12px;")
+        self.description_label.setWordWrap(True)
+        main_layout.addWidget(self.description_label)
         
         # 分隔线
         separator = QFrame()
@@ -154,7 +153,7 @@ class AIMentorWidget(QWidget):
         self.input_field = QTextEdit()
         self.input_field.setMaximumHeight(140)
         self.input_field.setFont(QFont('Segoe Print', 11))
-        self.input_field.setPlaceholderText("Type your question... (Ctrl+Enter to send)")
+        self.input_field.setPlaceholderText(tr("mentor.placeholder"))
         self.input_field.setStyleSheet("""
             QTextEdit {
                 border: 1px solid #4DA3FF;
@@ -169,7 +168,7 @@ class AIMentorWidget(QWidget):
         # 按钮
         button_layout = QVBoxLayout()
         
-        self.send_button = QPushButton("Send")
+        self.send_button = QPushButton(tr("mentor.send"))
         self.send_button.setFont(QFont('Segoe Print', 10, QFont.Bold))
         self.send_button.setStyleSheet("""
             QPushButton {
@@ -194,7 +193,7 @@ class AIMentorWidget(QWidget):
         self.send_button.clicked.connect(self._on_send_clicked)
         button_layout.addWidget(self.send_button)
         
-        self.clear_button = QPushButton("Clear")
+        self.clear_button = QPushButton(tr("mentor.clear"))
         self.clear_button.setFont(QFont('Segoe Print', 10))
         self.clear_button.setStyleSheet("""
             QPushButton {
@@ -214,6 +213,13 @@ class AIMentorWidget(QWidget):
         
         input_layout.addLayout(button_layout)
         main_layout.addLayout(input_layout)
+
+    def apply_language_texts(self):
+        self.title_label.setText(tr("mentor.title"))
+        self.description_label.setText(tr("mentor.description"))
+        self.input_field.setPlaceholderText(tr("mentor.placeholder"))
+        self.clear_button.setText(tr("mentor.clear"))
+        self.send_button.setText(tr("mentor.waiting") if self.is_waiting else tr("mentor.send"))
     
     def _on_input_key_press(self, event):
         """处理输入框按键"""
@@ -227,11 +233,11 @@ class AIMentorWidget(QWidget):
         message = self.input_field.toPlainText().strip()
         
         if not message:
-            QMessageBox.warning(self, "Notice", "Please enter a question")
+            QMessageBox.warning(self, tr("mentor.notice_title"), tr("mentor.empty_question"))
             return
         
         if not self.ai_mentor:
-            QMessageBox.critical(self, "Error", "AI Mentor not initialized. Please check API configuration.")
+            QMessageBox.critical(self, tr("mentor.error_title"), tr("mentor.not_initialized"))
             return
         
         # 显示用户消息
@@ -240,7 +246,7 @@ class AIMentorWidget(QWidget):
         
         # 禁用按钮并显示等待状态
         self.send_button.setEnabled(False)
-        self.send_button.setText("Waiting...")
+        self.send_button.setText(tr("mentor.waiting"))
         self.is_waiting = True
         
         # 在下一个事件循环中发送消息
@@ -271,13 +277,13 @@ class AIMentorWidget(QWidget):
                 self._add_message(response, is_user=False)
             else:
                 self._add_message(
-                    "Sorry, could not get a response. Please check API configuration and network.",
+                    tr("mentor.no_response"),
                     is_user=False
                 )
         
         # 恢复按钮状态
         self.send_button.setEnabled(True)
-        self.send_button.setText("Send")
+        self.send_button.setText(tr("mentor.send"))
         self.is_waiting = False
     
     def _add_message(self, text: str, is_user: bool = True):
@@ -286,7 +292,7 @@ class AIMentorWidget(QWidget):
         if not is_user and isinstance(text, str):
             words = text.split()
             if len(words) > 300:
-                text = ' '.join(words[:300]) + ' ... (truncated to 300 words)'
+                text = ' '.join(words[:300]) + tr("mentor.truncated")
 
         message_widget = ChatMessage(text, is_user)
         
@@ -320,8 +326,8 @@ class AIMentorWidget(QWidget):
         """清空对话"""
         reply = QMessageBox.question(
             self,
-            "Confirm",
-            "Clear all conversations?",
+            tr("mentor.confirm_title"),
+            tr("mentor.clear_confirm"),
             QMessageBox.Yes | QMessageBox.No
         )
         

@@ -9,6 +9,8 @@ from PySide6.QtGui import QFont
 import json
 import os
 
+from app.i18n import tr
+
 
 class SettingsWidget(QFrame):
     """Settings widget for font and other preferences"""
@@ -39,12 +41,12 @@ class SettingsWidget(QFrame):
         main_layout.setContentsMargins(20, 20, 20, 20)
         
         # Title
-        title = QLabel("Settings")
+        title = QLabel(tr("common.settings"))
         title.setFont(QFont("Segoe Print", 24, QFont.Bold))
         main_layout.addWidget(title)
         
         # Font Settings Group
-        font_group = QGroupBox("Font Settings")
+        font_group = QGroupBox(tr("student.font_settings"))
         font_group.setFont(QFont("Segoe Print", 12))
         font_layout = QVBoxLayout(font_group)
         
@@ -127,11 +129,16 @@ class SettingsWidget(QFrame):
     
     def _save_settings(self):
         """Save settings to JSON file"""
-        settings = {
-            "font": self.current_font
-        }
-        
         try:
+            settings = {}
+            if os.path.exists(self.config_path):
+                try:
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    settings = loaded if isinstance(loaded, dict) else {}
+                except Exception:
+                    settings = {}
+            settings["font"] = self.current_font
             os.makedirs(os.path.dirname(self.config_path), exist_ok=True)
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4, ensure_ascii=False)

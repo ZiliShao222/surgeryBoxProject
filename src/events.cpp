@@ -32,6 +32,7 @@ void eventsInit() {
 }
 
 void startEventSequence() {
+    resetEncoder();
     int idx = random(0, 10);
     for (int i = 0; i < 4; i++) {
         currentArray[i] = distanceArrays[idx][i];
@@ -76,7 +77,11 @@ void processEncoderEvents() {
         sendSignal("HighDamp");
         Serial.printf("[EVENT] HighDamp at %.3f m -> Lock brake, wait OK\n", dist);
         servoBrakeLock();
-        waitForCmd("OK");
+        if (!waitForCmd("OK")) {
+            sequenceRunning = false;
+            Serial.println("[EVENT] HighDamp interrupted by runtime command");
+            return;
+        }
         servoBrakeRelease();
         Serial.println("[EVENT] HighDamp cleared, brake released");
     }
@@ -94,9 +99,17 @@ void processEncoderEvents() {
             Serial.println("[EVENT] Continue received -> wait short pull, send Keep");
             waitShortPull();
             sendSignal("Keep");
-            waitForCmd("OK2");
+            if (!waitForCmd("OK2")) {
+                sequenceRunning = false;
+                Serial.println("[EVENT] LowDamp interrupted by runtime command");
+                return;
+            }
             servoBrakeRelease();
             Serial.println("[EVENT] OK2 received -> release brake");
+        } else if (cmd == "Stop" || cmd == "Winding") {
+            sequenceRunning = false;
+            Serial.println("[EVENT] LowDamp interrupted by runtime command");
+            return;
         }
         sequenceRunning = false;
         Serial.println("[EVENT] Sequence completed");

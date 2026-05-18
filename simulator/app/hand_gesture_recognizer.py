@@ -7,6 +7,8 @@ import cv2
 import numpy as np
 from collections import deque
 import math
+import os
+from pathlib import Path
 
 try:
     import mediapipe as mp
@@ -40,9 +42,31 @@ class HandGestureRecognizer:
         self.circular_motion_count = 0  # Count of completed circles
         self.hand_detector = None
         self.drawing_utils = None
+        self.api_mode = None
         
         if MEDIAPIPE_AVAILABLE:
             self._init_mediapipe()
+
+    def _model_path(self):
+        """Find the MediaPipe Tasks hand landmark model."""
+        candidates = []
+        env_path = os.environ.get("MEDIAPIPE_HAND_MODEL", "").strip()
+        if env_path:
+            candidates.append(Path(env_path))
+
+        app_dir = Path(__file__).resolve().parents[1]
+        project_dir = app_dir.parent
+        candidates.extend([
+            project_dir / "models" / "hand_landmarker.task",
+            app_dir / "models" / "hand_landmarker.task",
+            Path.cwd() / "models" / "hand_landmarker.task",
+            Path.cwd().parent / "models" / "hand_landmarker.task",
+        ])
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return ""
     
     def _init_mediapipe(self):
         """Initialize MediaPipe hand detection"""
@@ -50,15 +74,27 @@ class HandGestureRecognizer:
             print(f"[HandGestureRecognizer] Attempting to initialize MediaPipe")
             import mediapipe as mp
             
-            # 尝试新API (>= 0.8.9)
-            try:
-                print(f"[HandGestureRecognizer] Trying new API...")
+            model_path = self._model_path()
+            if model_path:
+                print(f"[HandGestureRecognizer] Trying MediaPipe Tasks API with {model_path}")
                 from mediapipe.tasks import python
                 from mediapipe.tasks.python import vision
-                print(f"[HandGestureRecognizer] New API available")
-                # 新API的实现会更复杂，暂时跳过
-                raise AttributeError("Using fallback to old API")
-            except (ImportError, AttributeError):
+
+                options = vision.HandLandmarkerOptions(
+                    base_options=python.BaseOptions(model_asset_path=model_path),
+                    running_mode=vision.RunningMode.IMAGE,
+                    num_hands=self.max_hands,
+                    min_hand_detection_confidence=self.min_detection_confidence,
+                    min_hand_presence_confidence=self.min_detection_confidence,
+                    min_tracking_confidence=0.5,
+                )
+                self.hand_detector = vision.HandLandmarker.create_from_options(options)
+                self.drawing_utils = None
+                self.api_mode = "tasks"
+                print("[HandGestureRecognizer] MediaPipe Tasks API initialized successfully")
+                return
+
+            if hasattr(mp, "solutions"):
                 # 回到旧API (< 0.8.9)
                 print(f"[HandGestureRecognizer] Trying old API...")
                 mp_hands = mp.solutions.hands
@@ -71,8 +107,11 @@ class HandGestureRecognizer:
                     min_tracking_confidence=0.5
                 )
                 self.drawing_utils = mp_drawing
+                self.api_mode = "solutions"
                 print(f"[HandGestureRecognizer] Old API initialized successfully")
                 return
+
+            print("[HandGestureRecognizer] No hand model found and mp.solutions is unavailable")
             
         except Exception as e:
             print(f"[HandGestureRecognizer] Error initializing MediaPipe: {e}")
@@ -81,6 +120,15 @@ class HandGestureRecognizer:
             self.hand_detector = None
             self.drawing_utils = None
             print(f"[HandGestureRecognizer] Hand detection disabled - program will work without pose display")
+
+    def close(self):
+        """Release MediaPipe native resources."""
+        try:
+            if self.hand_detector and hasattr(self.hand_detector, "close"):
+                self.hand_detector.close()
+        except Exception:
+            pass
+        self.hand_detector = None
     
     def process_frame(self, frame):
         """
@@ -93,6 +141,21 @@ class HandGestureRecognizer:
         try:
             # Convert BGR to RGB
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if self.api_mode == "tasks":
+                import mediapipe as mp
+
+                mp_image = mp.Image(
+                    image_format=mp.ImageFormat.SRGB,
+                    data=np.ascontiguousarray(rgb_frame)
+                )
+                results = self.hand_detector.detect(mp_image)
+                hands_data = []
+                handedness_list = getattr(results, "handedness", []) or []
+                for idx, landmarks in enumerate(getattr(results, "hand_landmarks", []) or []):
+                    handedness = handedness_list[idx] if idx < len(handedness_list) else None
+                    hands_data.append(self._extract_tasks_hand_data(landmarks, frame, handedness))
+                return hands_data
+
             results = self.hand_detector.process(rgb_frame)
             
             hands_data = []
@@ -105,6 +168,47 @@ class HandGestureRecognizer:
         except Exception as e:
             print(f"Error processing frame: {e}")
             return []
+
+    def _extract_tasks_hand_data(self, landmarks, frame, handedness):
+        """Extract useful information from MediaPipe Tasks hand landmarks."""
+        h, w, c = frame.shape
+
+        joints = []
+        for lm in landmarks:
+            joints.append({
+                'x': lm.x * w,
+                'y': lm.y * h,
+                'z': lm.z,
+                'nx': lm.x,
+                'ny': lm.y
+            })
+
+        label = "Unknown"
+        score = 0.0
+        try:
+            if handedness:
+                category = handedness[0]
+                label = (
+                    getattr(category, "category_name", None)
+                    or getattr(category, "display_name", None)
+                    or getattr(category, "label", None)
+                    or "Unknown"
+                )
+                score = float(getattr(category, "score", 0.0))
+        except Exception:
+            pass
+
+        return {
+            'handedness': label,
+            'confidence': score,
+            'joints': joints,
+            'pinch_state': self._detect_pinch(joints),
+            'index_extended': self._is_index_extended(joints),
+            'rotation_angle': self._calculate_rotation_angle(joints),
+            'rotation_count': self._calculate_rotation_count(joints),
+            'thumb_index_distance': self._calculate_distance(joints[self.THUMB_TIP], joints[self.INDEX_TIP]),
+            'circular_motion': self._detect_circular_motion(joints)
+        }
     
     def _extract_hand_data(self, landmarks, frame, handedness):
         """Extract useful information from hand landmarks"""

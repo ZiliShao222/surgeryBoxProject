@@ -20,6 +20,7 @@ import numpy as np
 class CameraThread(QThread):
     """Thread to capture video frames from camera"""
     frame_ready = Signal(QImage)
+    error = Signal(str)
     
     def __init__(self, camera_index=0):
         super().__init__()
@@ -32,6 +33,7 @@ class CameraThread(QThread):
         try:
             self.cap = cv2.VideoCapture(self.camera_index)
             if not self.cap.isOpened():
+                self.error.emit(f"Could not open camera index {self.camera_index}. Check camera connection or close other apps using it.")
                 return
             
             try:
@@ -67,6 +69,10 @@ class CameraThread(QThread):
                     
         except Exception as e:
             print(f"Camera initialization error: {e}")
+            try:
+                self.error.emit(str(e))
+            except Exception:
+                pass
         finally:
             self.cleanup()
     
@@ -85,15 +91,14 @@ class CameraThread(QThread):
             print(f"[CameraThread.stop] Stopping camera thread")
             self.is_running = False
             self.cleanup()
-            # PySide6 wait() 不支持timeout参数，改用 msleep 轮询
-            max_wait = 20  # 2 seconds / 100ms = 20 iterations
-            for i in range(max_wait):
-                if not self.isRunning():
-                    print(f"[CameraThread.stop] Thread stopped after {i*100}ms")
-                    break
-                self.msleep(100)
-            else:
-                print(f"[CameraThread.stop] Thread did not finish after 2 seconds")
+            if self.isRunning():
+                stopped = self.wait(2000)
+                if stopped:
+                    print("[CameraThread.stop] Thread stopped")
+                else:
+                    print("[CameraThread.stop] Thread did not finish after 2 seconds, terminating")
+                    self.terminate()
+                    self.wait(1000)
         except Exception as e:
             print(f"[CameraThread.stop] Error stopping thread: {e}")
 

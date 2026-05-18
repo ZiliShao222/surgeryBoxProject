@@ -25,6 +25,7 @@ import os
 import random
 import json
 import re
+from pathlib import Path
 
 from app.config import APP_NAME, APP_VERSION
 from app.ui.login_page import LoginPage
@@ -33,8 +34,34 @@ from app.hardware_connector import HardwareConnector
 from app.ui.theme import Theme, qss_for
 from app.ui.widgets import section_placeholder
 from app.ui.settings_widget import SettingsWidget
+from app.ui.ai_report_widgets import AIReportWorker, AiLoadingIndicator
+from app.i18n import get_language, language_options, set_language, tr, tr_training_label
 from app.storage import write_profile_if_missing
 from app.quiz_module import QuizModule
+
+
+_SIMULATOR_DIR = Path(__file__).resolve().parents[2]
+_PROJECT_DIR = _SIMULATOR_DIR.parent
+
+
+def _asset_path(filename: str) -> str:
+    raw = str(filename).replace("\\", "/")
+    path = Path(raw)
+    if path.is_absolute():
+        return str(path)
+    if raw.startswith("assets/"):
+        raw = raw[len("assets/"):]
+    candidates = [
+        _SIMULATOR_DIR / "assets" / raw,
+        Path.cwd() / "assets" / raw,
+        Path.cwd().parent / "assets" / raw,
+        _PROJECT_DIR / "assets" / raw,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
+
 
 class App(QMainWindow):
     def __init__(self):
@@ -56,6 +83,8 @@ class App(QMainWindow):
         self.main = None
         if hasattr(self.login, "clear_fields"):
             self.login.clear_fields()
+        if hasattr(self.login, "_apply_language_texts"):
+            self.login._apply_language_texts()
         self.stack.setCurrentWidget(self.login)
 
     def _on_login(self, user):
@@ -203,14 +232,14 @@ class StudentShell(QWidget):
 
         # --- click sound (default) ---
         self.click_sfx = QSoundEffect()
-        click_path = os.path.join(os.getcwd(), 'assets', 'click.wav')
+        click_path = _asset_path('click.wav')
         if os.path.exists(click_path):
             self.click_sfx.setSource(QUrl.fromLocalFile(click_path))
         else:
             self.click_sfx = None
 
         # --- background music setup (will be started by start_welcome) ---
-        music_path = os.path.join(os.getcwd(), 'assets', 'background.mp3')
+        music_path = _asset_path('background.mp3')
         self.music_player = None
         if os.path.exists(music_path):
             try:
@@ -239,9 +268,9 @@ class StudentShell(QWidget):
             self.music_player = None
 
         # Background image for main shell (if provided). Use a QLabel so it is visible despite app-wide QWidget styles.
-        bg_path = os.path.join(os.getcwd(), 'assets', 'backgroundMain.jpg')
+        bg_path = _asset_path('backgroundMain.jpg')
         if not os.path.exists(bg_path):
-            fb = os.path.join(os.getcwd(), 'assets', 'background.jpg')
+            fb = _asset_path('background.jpg')
             if os.path.exists(fb):
                 bg_path = fb
             else:
@@ -281,7 +310,7 @@ class StudentShell(QWidget):
         top_l.setContentsMargins(14, 10, 14, 10)
         top_l.setSpacing(10)
 
-        self.left_title = QLabel("Simulation Training for Epidural Analgesia Nursing Care")
+        self.left_title = QLabel(tr("app.header"))
         self.left_title.setObjectName("Header")
         top_l.addWidget(self.left_title)
         top_l.addStretch(1)
@@ -293,36 +322,48 @@ class StudentShell(QWidget):
         # self.lang.currentIndexChanged.connect(lambda _: self._on_button_click(lambda: self._set_content("Language switching (dev)")))
         # top_l.addWidget(self.lang)
 
-        # Reset Simulator button
-        btn_reset_sim = QPushButton("Reset Simulator")
-        btn_reset_sim.clicked.connect(lambda: self._on_button_click(self._reset_simulator))
-        top_l.addWidget(btn_reset_sim)
+        self.lang_combo = QComboBox()
+        self.lang_combo.setObjectName("LanguageCombo")
+        for code, label in language_options():
+            self.lang_combo.addItem(label, code)
+        current_lang = get_language()
+        for idx in range(self.lang_combo.count()):
+            if self.lang_combo.itemData(idx) == current_lang:
+                self.lang_combo.setCurrentIndex(idx)
+                break
+        self.lang_combo.currentIndexChanged.connect(self._on_language_changed)
+        top_l.addWidget(self.lang_combo)
 
-        # Background music mute toggle (default: playing/unmuted) — simplified label
-        self.btn_mute = QPushButton("Mute")
+        # Reset Simulator button
+        self.btn_reset_sim = QPushButton(tr("student.reset_simulator"))
+        self.btn_reset_sim.clicked.connect(lambda: self._on_button_click(self._reset_simulator))
+        top_l.addWidget(self.btn_reset_sim)
+
+        # Background music mute toggle (default: playing/unmuted).
+        self.btn_mute = QPushButton(tr("student.mute"))
         self.btn_mute.setCheckable(True)
         self.btn_mute.clicked.connect(lambda: self._on_button_click(self._toggle_music))
         top_l.addWidget(self.btn_mute)
 
         # Simulator Connection Debug (new)
-        btn_sim_conn = QPushButton("Simulator")
-        btn_sim_conn.clicked.connect(lambda: self._on_button_click(self._show_simulator_connection))
-        top_l.addWidget(btn_sim_conn)
+        self.btn_sim_conn = QPushButton(tr("student.simulator"))
+        self.btn_sim_conn.clicked.connect(lambda: self._on_button_click(self._show_simulator_connection))
+        top_l.addWidget(self.btn_sim_conn)
 
         # Per-account theme toggle for the student shell.
-        btn_theme = QPushButton("Theme")
-        btn_theme.clicked.connect(lambda: self._on_button_click(self.on_toggle_theme))
-        top_l.addWidget(btn_theme)
+        self.btn_theme = QPushButton(tr("common.theme"))
+        self.btn_theme.clicked.connect(lambda: self._on_button_click(self.on_toggle_theme))
+        top_l.addWidget(self.btn_theme)
 
         # Settings (placeholder)
-        btn_settings = QPushButton("Settings")
-        btn_settings.clicked.connect(lambda: self._on_button_click(self._show_settings))
-        top_l.addWidget(btn_settings)
+        self.btn_settings = QPushButton(tr("common.settings"))
+        self.btn_settings.clicked.connect(lambda: self._on_button_click(self._show_settings))
+        top_l.addWidget(self.btn_settings)
 
         # Logout
-        btn_logout = QPushButton(f"Logout ({self.user.username})")
-        btn_logout.clicked.connect(lambda: self._on_button_click(self.on_logout))
-        top_l.addWidget(btn_logout)
+        self.btn_logout = QPushButton(tr("common.logout_user", username=self.user.username))
+        self.btn_logout.clicked.connect(lambda: self._on_button_click(self.on_logout))
+        top_l.addWidget(self.btn_logout)
 
         # Unified button style (boxed look)
         btn_style = """
@@ -364,29 +405,31 @@ class StudentShell(QWidget):
         self.menu_list.setFont(QFont('Segoe Script', 12))
 
         items = [
-            ("Welcome", "welcome"),
-            ("Simulation Training", "simulation"),
-            ("E-learning Module", "elearning"),
-            ("Practice Questions", "practice"),
-            ("Practice Records", "practice_records"),
-            ("Training Records", "training_records"),
-            ("AI Nursing Mentor", "ai_mentor"),  # 新增AI对话菜单
+            (tr("menu.welcome"), "welcome"),
+            (tr("menu.simulation"), "simulation"),
+            (tr("menu.elearning"), "elearning"),
+            (tr("menu.practice"), "practice"),
+            (tr("menu.practice_records"), "practice_records"),
+            (tr("menu.training_records"), "training_records"),
+            (tr("menu.ai_mentor"), "ai_mentor"),  # 新增AI对话菜单
             # ("Report Records", "reports"),
         ]
         # Teacher-only modules live in TeacherShell; the student shell stays training-focused.
 
+        self._menu_items = {}
         for text, key in items:
             it = QListWidgetItem(text)
             it.setData(Qt.UserRole, key)
 
             it.setFont(QFont('Segoe Print', 14))
             self.menu_list.addItem(it)
+            self._menu_items[key] = it
 
         self.menu_list.currentItemChanged.connect(self._on_menu)
         # Start with Welcome selected (index 0)
         self.menu_list.setCurrentRow(0)
 
-        self.modules_label = QLabel("Modules")
+        self.modules_label = QLabel(tr("student.modules"))
         self.modules_label.setObjectName("ModulesLabel")
         self.modules_label.setFont(QFont(self.student_heading_font, 22, QFont.Bold))
         menu_l.addWidget(self.modules_label)
@@ -491,6 +534,101 @@ class StudentShell(QWidget):
                 pass
         if callable(callback):
             callback()
+
+    def _on_language_changed(self):
+        if not hasattr(self, "lang_combo"):
+            return
+        lang = self.lang_combo.currentData()
+        set_language(lang)
+        self._apply_language_texts()
+        self._refresh_visible_page_after_language_change()
+
+    def _apply_language_texts(self):
+        if hasattr(self, "left_title"):
+            self.left_title.setText(tr("app.header"))
+        if hasattr(self, "btn_reset_sim"):
+            self.btn_reset_sim.setText(tr("student.reset_simulator"))
+        if hasattr(self, "btn_mute"):
+            self.btn_mute.setText(tr("student.mute"))
+        if hasattr(self, "btn_sim_conn"):
+            self.btn_sim_conn.setText(tr("student.simulator"))
+        if hasattr(self, "btn_theme"):
+            self.btn_theme.setText(tr("common.theme"))
+        if hasattr(self, "btn_settings"):
+            self.btn_settings.setText(tr("common.settings"))
+        if hasattr(self, "btn_logout"):
+            self.btn_logout.setText(tr("common.logout_user", username=self.user.username))
+        if hasattr(self, "modules_label"):
+            self.modules_label.setText(tr("student.modules"))
+        if hasattr(self, "_menu_items"):
+            menu_titles = {
+                "welcome": tr("menu.welcome"),
+                "simulation": tr("menu.simulation"),
+                "elearning": tr("menu.elearning"),
+                "practice": tr("menu.practice"),
+                "practice_records": tr("menu.practice_records"),
+                "training_records": tr("menu.training_records"),
+                "ai_mentor": tr("menu.ai_mentor"),
+            }
+            for key, item in self._menu_items.items():
+                if key in menu_titles:
+                    item.setText(menu_titles[key])
+
+    def _refresh_visible_page_after_language_change(self):
+        """Rebuild lightweight pages so labels change without restarting."""
+        try:
+            if getattr(self, "current_training", None):
+                return
+        except Exception:
+            pass
+
+        current_item = self.menu_list.currentItem() if hasattr(self, "menu_list") else None
+        current_key = current_item.data(Qt.UserRole) if current_item else None
+
+        if hasattr(self, "student_home_container") and self.student_home_container.isVisible():
+            self._show_student_home()
+            return
+        if hasattr(self, "simulation_container") and self.simulation_container.isVisible():
+            try:
+                self.content.layout().removeWidget(self.simulation_container)
+                self.simulation_container.deleteLater()
+                delattr(self, "simulation_container")
+            except Exception:
+                pass
+            self._show_simulation_options()
+            return
+        if hasattr(self, "training_records_container") and self.training_records_container.isVisible():
+            self._show_training_records()
+            return
+        if hasattr(self, "settings_container") and self.settings_container.isVisible():
+            self.content_title.setText(tr("common.settings"))
+            if hasattr(self, "btn_camera_tab"):
+                self.btn_camera_tab.setText(tr("student.camera_settings"))
+            if hasattr(self, "btn_font_tab"):
+                self.btn_font_tab.setText(tr("student.font_settings"))
+            return
+        if hasattr(self, "simulator_conn_widget") and self.simulator_conn_widget.isVisible():
+            self.content_title.setText(tr("student.simulator"))
+            return
+        if hasattr(self, "ai_mentor_widget") and self.ai_mentor_widget and self.ai_mentor_widget.isVisible():
+            self.content_title.setText(tr("student.ai_mentor"))
+            if hasattr(self.ai_mentor_widget, "apply_language_texts"):
+                self.ai_mentor_widget.apply_language_texts()
+            return
+        if current_key == "welcome":
+            self._show_student_home()
+        elif current_key == "simulation":
+            self._show_simulation_options()
+        elif current_key == "elearning":
+            self.content_title.setText(tr("student.elearning_module"))
+        elif current_key == "practice":
+            self.content_title.setText(tr("student.practice_questions"))
+        elif current_key == "practice_records":
+            self.content_title.setText(tr("student.practice_records"))
+        elif current_key == "training_records":
+            self._show_training_records()
+        elif current_key == "ai_mentor":
+            self.content_title.setText(tr("student.ai_mentor"))
 
     def _toggle_music(self):
         if not self.music_player:
@@ -736,6 +874,8 @@ class StudentShell(QWidget):
             button_style = self._student_top_button_style(palette)
             for button in self.top_buttons:
                 button.setStyleSheet(button_style)
+        if hasattr(self, "lang_combo"):
+            self.lang_combo.setStyleSheet(self._student_combo_style(palette))
 
         current_key = None
         if hasattr(self, "menu_list"):
@@ -853,7 +993,7 @@ class StudentShell(QWidget):
             except Exception as e:
                 print(f"Error playing click sound: {e}")
         
-        # 根据类型启动对应的训练
+        # Start the matching training workflow by key.
         if training_key in ["remove_needle", "remove_needle_simulator", "remove_needle_no_simulator"]:
             print(f"[MainWindow] Starting remove_needle training with key: {training_key}")
             self._start_remove_needle_training(training_key)
@@ -863,6 +1003,9 @@ class StudentShell(QWidget):
         elif training_key == "comprehensive":
             print(f"[MainWindow] Starting comprehensive training")
             self._start_comprehensive_training()
+        elif training_key == "training_records":
+            print(f"[MainWindow] Opening training records")
+            self._show_training_records()
         else:
             print(f"[MainWindow] Unknown training key: {training_key}")
     
@@ -890,11 +1033,11 @@ class StudentShell(QWidget):
             self.content_title.setVisible(False)
             self.content_view.setVisible(False)
             
-            # 创建训练模块作为content的直接子widget（不添加到layout）
+            # Create the training widget directly under content instead of adding it to the layout.
             print(f"[Training] Creating RemoveNeedleTraining widget")
             print(f"[Training] self.content = {self.content}, type = {type(self.content)}")
             self.current_training = RemoveNeedleTraining(self.content, training_mode=training_key)
-            # 传入用户名用于保存训练记录
+            # Pass username so the training record can be saved.
             self.current_training.current_user = self.user.username
             print(f"[Training] RemoveNeedleTraining created successfully")
             
@@ -908,11 +1051,11 @@ class StudentShell(QWidget):
             print(f"[Training] Initializing quiz_module for training mode")
             if not hasattr(self, 'quiz_module') or self.quiz_module is None:
                 self.quiz_module = QuizModule(training_mode=True)
-                quiz_path = os.path.join("assets", "epidural_quiz_questions.json")
+                quiz_path = _asset_path("epidural_quiz_questions.json")
                 self.quiz_module.load_quiz_data(quiz_path)
                 self.quiz_module.quiz_completed.connect(self._on_quiz_completed)
                 self.quiz_module.back_clicked.connect(self._on_quiz_back)
-                # 添加到content中，初始时隐藏
+                # Add to content and keep it hidden initially.
                 content_l = self.content.layout()
                 content_l.insertWidget(2, self.quiz_module)
                 self.quiz_module.setVisible(False)
@@ -925,7 +1068,7 @@ class StudentShell(QWidget):
             print(f"[Training] Setting training widget visible")
             self.current_training.setVisible(True)
             
-            # 开始训练
+            # Start training.
             print(f"[Training] Calling start_training()")
             self.current_training.start_training()
             print(f"[Training] Training started successfully!")
@@ -935,35 +1078,68 @@ class StudentShell(QWidget):
             print(traceback.format_exc())
     
     def _start_change_dressing_training(self):
-        """启动更换敷料训练"""
-        # TODO: 实现更换敷料训练
-        print("Change dressing training not yet implemented")
+        """Start AR dressing-change training."""
+        print("\n[Training] Starting change dressing AR training")
+        try:
+            from app.training_change_dressing import ChangeDressingTraining
+
+            self._stop_current_training()
+            self.menu_list.clearSelection()
+            self._hide_all_content_containers()
+            if hasattr(self, 'simulation_container'):
+                self.simulation_container.setVisible(False)
+            self.welcome_quote.setVisible(False)
+            self.content_title.setVisible(False)
+            self.content_view.setVisible(False)
+
+            self.current_training = ChangeDressingTraining(self.content, training_mode="change_dressing")
+            self.current_training.current_user = self.user.username
+            self.current_training.training_completed.connect(self._on_training_completed)
+            self.current_training.setGeometry(self.content.rect())
+            self.current_training.setVisible(True)
+            self.current_training.start_training()
+            print("[Training] Change dressing AR training started successfully")
+        except Exception as e:
+            import traceback
+            print(f"\n[ERROR] Error starting change dressing training: {e}")
+            print(traceback.format_exc())
     
     def _start_comprehensive_training(self):
-        """启动综合训练"""
-        # TODO: 实现综合训练（组合多个模块）
-        print("Comprehensive training not yet implemented")
+        """Start the full AR flow: preparation, dressing removal, wiping, and catheter removal."""
+        print("[MainWindow] Starting comprehensive full AR training")
+        self._start_remove_needle_training("comprehensive")
+
+    def _show_training_placeholder(self, title, message):
+        """Show a clear in-app placeholder for planned training modules."""
+        self._stop_current_training()
+        self._hide_all_content_containers()
+        self.content_title.setText(title)
+        self.content_title.setVisible(True)
+        self.content_view.setText(message)
+        self.content_view.setWordWrap(True)
+        self.content_view.setVisible(True)
+        self._refresh_student_inline_text_colors()
     
     def _on_quiz_triggered_from_training(self, question_id):
         """
-        从训练中触发的Quiz（Q3, Q4, Q5）
-        显示透明的Quiz浮在训练画面上，暂停Phase 4的拔针操作
+        Quiz triggered from training (Q3, Q4, Q5).
+        Show a transparent quiz overlay and pause the Phase 4 removal action.
         """
         try:
             print(f"[Training] Quiz triggered during training: {question_id}")
             
-            # 暂停Phase 4的拔针操作
+            # Pause Phase 4 removal while the quiz is shown.
             if hasattr(self, 'current_training') and self.current_training:
                 self.current_training.pause_phase4()
             
             if not hasattr(self, 'quiz_module') or self.quiz_module is None:
                 print(f"[Training] Quiz module not initialized, creating now...")
                 self.quiz_module = QuizModule(training_mode=True)
-                quiz_path = os.path.join("assets", "epidural_quiz_questions.json")
+                quiz_path = _asset_path("epidural_quiz_questions.json")
                 self.quiz_module.load_quiz_data(quiz_path)
                 self.quiz_module.quiz_completed.connect(self._on_quiz_completed)
                 self.quiz_module.back_clicked.connect(self._on_quiz_back)
-                # 添加到content中
+                # Add to content.
                 if hasattr(self, 'content') and self.content.layout():
                     content_l = self.content.layout()
                     content_l.insertWidget(2, self.quiz_module)
@@ -978,13 +1154,13 @@ class StudentShell(QWidget):
                 print(f"[Training] Available questions: {list(self.quiz_module.questions.keys())}")
                 return
             
-            # 确保quiz_module可见并在最前
+            # Ensure quiz_module is visible and raised to the front.
             if not self.quiz_module.isVisible():
                 self.quiz_module.setVisible(True)
             self.quiz_module.raise_()
             self.quiz_module.activateWindow()
             
-            # 设置半透明棕色背景，使quiz能够浮在训练画面上
+            # Use a translucent background so the quiz floats over the training view.
             self.quiz_module.setStyleSheet("""
                 QFrame {
                     background: rgba(101, 67, 33, 200);
@@ -1024,7 +1200,7 @@ class StudentShell(QWidget):
             print(f"[Training] Error in training completion: {e}")
     
     def _stop_current_training(self):
-        """停止当前的训练（菜单切换或按钮点击时调用）"""
+        """Stop the active training widget before switching pages."""
         if hasattr(self, 'current_training') and self.current_training:
             try:
                 self.current_training.cleanup()
@@ -1035,11 +1211,11 @@ class StudentShell(QWidget):
                 print(f"Error stopping training: {e}")
     
     def _on_menu(self, current, _prev):
-        """处理菜单项切换"""
-        # 首先停止任何正在进行的训练
+        """Handle left-menu navigation."""
+        # Stop any active training first.
         self._stop_current_training()
         
-        # 清理E-learning视频播放器
+        # Clean up the E-learning video player.
         self._cleanup_elearning_video()
         
         # 清理Practice相关容器
@@ -1138,7 +1314,7 @@ class StudentShell(QWidget):
         self._hide_all_content_containers()
         self.welcome_quote.setVisible(False)
         self.content_view.setVisible(False)
-        self.content_title.setText("Student Dashboard")
+        self.content_title.setText(tr("student.dashboard_title"))
         self.content_title.setVisible(True)
 
         if hasattr(self, 'student_home_container') and self.student_home_container:
@@ -1158,7 +1334,7 @@ class StudentShell(QWidget):
         heading = self.student_heading_font
         body = self.student_body_font
 
-        greeting = QLabel(f"Welcome, {self.user.username}. Choose a training task or review your latest progress.")
+        greeting = QLabel(tr("student.dashboard_greeting", username=self.user.username))
         greeting.setWordWrap(True)
         greeting.setStyleSheet(
             f"font-family: '{body}', 'Segoe UI', Arial; font-size: 17px; "
@@ -1169,30 +1345,31 @@ class StudentShell(QWidget):
         stats = self._get_student_training_stats()
         cards = QHBoxLayout()
         cards.setSpacing(12)
-        cards.addWidget(self._student_metric_card("Completed", str(stats["total_trainings"])))
-        cards.addWidget(self._student_metric_card("Avg Time", self._student_format_seconds(stats["avg_time"])))
-        cards.addWidget(self._student_metric_card("Best Time", self._student_format_seconds(stats["best_time"])))
-        cards.addWidget(self._student_metric_card("Avg Accuracy", f"{stats['avg_accuracy']:.0f}%"))
+        cards.addWidget(self._student_metric_card(tr("student.completed"), str(stats["total_trainings"])))
+        cards.addWidget(self._student_metric_card(tr("student.dressing_changes"), str(stats.get("change_dressing_count", 0))))
+        cards.addWidget(self._student_metric_card(tr("student.avg_time"), self._student_format_seconds(stats["avg_time"])))
+        cards.addWidget(self._student_metric_card(tr("student.best_time"), self._student_format_seconds(stats["best_time"])))
+        cards.addWidget(self._student_metric_card(tr("student.avg_accuracy"), f"{stats['avg_accuracy']:.0f}%"))
         layout.addLayout(cards)
 
         actions = QHBoxLayout()
         actions.setSpacing(12)
-        actions.addWidget(self._student_action_button("Start Simulator\nTraining", "remove_needle_simulator"))
-        actions.addWidget(self._student_action_button("Start Camera AR\nTraining", "remove_needle_no_simulator"))
+        actions.addWidget(self._student_action_button(tr("student.start_dressing_change"), "change_dressing"))
+        actions.addWidget(self._student_action_button(tr("student.start_catheter_removal"), "remove_needle_simulator"))
 
-        summary_btn = QPushButton("Generate AI\nSummary")
+        summary_btn = QPushButton(tr("student.generate_ai_summary"))
         summary_btn.setStyleSheet(self._student_action_button_style())
         summary_btn.clicked.connect(self._generate_student_ai_summary)
         self.student_ai_summary_btn = summary_btn
         actions.addWidget(summary_btn)
 
-        records_btn = QPushButton("View My\nRecords")
+        records_btn = QPushButton(tr("student.view_records"))
         records_btn.setStyleSheet(self._student_action_button_style())
         records_btn.clicked.connect(lambda: self._on_button_click(self._show_training_records))
         actions.addWidget(records_btn)
         layout.addLayout(actions)
 
-        recent_title = QLabel("Recent Training")
+        recent_title = QLabel(tr("student.recent_training"))
         recent_title.setStyleSheet(
             f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
             f"color: {palette['text']}; font-weight: 800; background: transparent;"
@@ -1212,13 +1389,14 @@ class StudentShell(QWidget):
                 font-family: '{body}', 'Segoe UI', Arial;
                 font-size: 13px;
             }}
+            {self._student_scrollbar_style(palette)}
         """)
         recent.setText(self._student_recent_training_text(stats["summaries"]))
         layout.addWidget(recent)
 
         ai_header = QHBoxLayout()
         ai_header.setSpacing(8)
-        ai_title = QLabel("AI Training Summary")
+        ai_title = QLabel(tr("student.ai_training_summary"))
         ai_title.setStyleSheet(
             f"font-family: '{heading}', '{body}', 'Segoe UI', Arial; font-size: 18px; "
             f"color: {palette['text']}; font-weight: 800; background: transparent;"
@@ -1227,9 +1405,14 @@ class StudentShell(QWidget):
         ai_header.addStretch(1)
         layout.addLayout(ai_header)
 
+        self.student_ai_loading = AiLoadingIndicator()
+        self.student_ai_loading.apply_palette(palette)
+        self.student_ai_loading.setVisible(False)
+        layout.addWidget(self.student_ai_loading)
+
         self.student_ai_summary = QTextEdit()
         self.student_ai_summary.setReadOnly(True)
-        self.student_ai_summary.setMaximumHeight(190)
+        self.student_ai_summary.setMaximumHeight(280)
         self.student_ai_summary.setStyleSheet(f"""
             QTextEdit {{
                 background: {palette['card']};
@@ -1240,10 +1423,9 @@ class StudentShell(QWidget):
                 font-family: '{body}', 'Segoe UI', Arial;
                 font-size: 13px;
             }}
+            {self._student_scrollbar_style(palette)}
         """)
-        self.student_ai_summary.setText(
-            "After training, a summary is generated automatically. You can also click Generate AI Summary above."
-        )
+        self.student_ai_summary.setText(tr("student.ai_summary_placeholder"))
         layout.addWidget(self.student_ai_summary)
         layout.addStretch(1)
 
@@ -1303,15 +1485,120 @@ class StudentShell(QWidget):
             }}
         """
 
+    def _student_combo_style(self, palette=None):
+        palette = palette or self._student_theme_tokens()
+        return f"""
+            QComboBox {{
+                background: {palette['panel_soft']};
+                border: 1px solid {palette['border']};
+                border-radius: 10px;
+                padding: 6px 24px 6px 10px;
+                color: {palette['text']};
+                font-family: '{self.student_body_font}', 'Segoe UI', Arial;
+                font-size: 14px;
+                font-weight: 700;
+                min-width: 92px;
+            }}
+            QComboBox:hover {{
+                background: {palette['accent_soft']};
+                border-color: {palette['accent']};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 22px;
+            }}
+            QComboBox QAbstractItemView {{
+                background: {palette['panel']};
+                color: {palette['text']};
+                border: 1px solid {palette['border']};
+                selection-background-color: {palette['accent_soft']};
+            }}
+        """
+
+    def _student_scrollbar_style(self, palette):
+        return f"""
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 12px;
+                margin: 6px 3px 6px 3px;
+                border: none;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {palette['accent']};
+                border-radius: 5px;
+                min-height: 42px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {palette['accent_deep']};
+            }}
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {{
+                height: 0px;
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar::add-page:vertical,
+            QScrollBar::sub-page:vertical {{
+                background: transparent;
+            }}
+            QScrollBar:horizontal {{
+                background: transparent;
+                height: 10px;
+                margin: 3px 6px 3px 6px;
+                border: none;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: {palette['accent']};
+                border-radius: 4px;
+                min-width: 42px;
+            }}
+            QScrollBar::handle:horizontal:hover {{
+                background: {palette['accent_deep']};
+            }}
+            QScrollBar::add-line:horizontal,
+            QScrollBar::sub-line:horizontal {{
+                width: 0px;
+                background: transparent;
+                border: none;
+            }}
+            QScrollBar::add-page:horizontal,
+            QScrollBar::sub-page:horizontal {{
+                background: transparent;
+            }}
+        """
+
     def _get_student_training_stats(self):
         try:
             from app.training_records import get_training_record_manager
             manager = get_training_record_manager()
             stats = manager.get_training_statistics(self.user.username)
-            summaries = stats.get("summaries", [])
-            accuracies = [item.get("accuracy", 0) for item in summaries if item.get("accuracy", 0) > 0]
+            summaries = []
+            for record in stats.get("details", []):
+                training_data = record.get("training_data", {}) if isinstance(record, dict) else {}
+                if not isinstance(training_data, dict):
+                    training_data = {}
+                summaries.append({
+                    "completed_at": record.get("completed_at") or training_data.get("completed_at"),
+                    "training_mode": training_data.get("training_mode") or training_data.get("training_type"),
+                    "training_type": training_data.get("training_type") or training_data.get("training_mode"),
+                    "elapsed_time": training_data.get("elapsed_time", 0),
+                    "accuracy": training_data.get("accuracy", 0),
+                    "expected_events": training_data.get("expected_events", 0),
+                    "events_completed": training_data.get("phase4_events_completed", 0),
+                    "events_triggered": training_data.get("events_triggered", {}),
+                    "events_results": training_data.get("events_results", []),
+                    "max_pull_distance": training_data.get("max_pull_distance", 0),
+                    "pull_config": training_data.get("pull_config", {}),
+                    "training_data": training_data,
+                })
+            accuracies = [
+                item.get("accuracy", 0)
+                for item in summaries
+                if item.get("training_mode") != "change_dressing" and item.get("accuracy", 0) > 0
+            ]
             stats["summaries"] = summaries
-            stats["avg_accuracy"] = sum(accuracies) / len(accuracies) if accuracies else 0
+            stats["avg_accuracy"] = stats.get("avg_accuracy") or (sum(accuracies) / len(accuracies) if accuracies else 0)
+            stats["change_dressing_count"] = stats.get("change_dressing_count", 0)
             return stats
         except Exception as e:
             print(f"[StudentHome] Error loading training stats: {e}")
@@ -1320,62 +1607,99 @@ class StudentShell(QWidget):
                 "avg_time": 0,
                 "best_time": None,
                 "avg_accuracy": 0,
+                "change_dressing_count": 0,
                 "summaries": [],
             }
 
     def _student_recent_training_text(self, summaries):
         if not summaries:
-            return "No training records yet. Start with Simulator Training or Camera AR Training."
+            return tr("student.no_training_records")
 
         lines = []
         for item in summaries[:5]:
+            result_text = self._student_training_result_text(item)
             lines.append(
                 f"{self._student_format_date(item.get('completed_at'))} | "
                 f"{self._student_training_label(item.get('training_mode'))} | "
                 f"{self._student_format_seconds(item.get('elapsed_time'))} | "
-                f"{item.get('accuracy', 0):.0f}%"
+                f"{result_text}"
             )
         return "\n".join(lines)
 
+    def _student_training_result_text(self, item):
+        if item.get("training_mode") == "change_dressing":
+            completed = int(item.get("events_completed") or len(item.get("events_results", [])) or 0)
+            expected = int(item.get("expected_events") or completed or 3)
+            return f"{completed}/{expected} {tr('student.steps')}"
+        return f"{item.get('accuracy', 0):.0f}%"
+
     def _generate_student_ai_summary(self):
         if not hasattr(self, "student_ai_summary") or self.student_ai_summary is None:
+            return
+        if getattr(self, "_student_ai_worker", None) and self._student_ai_worker.isRunning():
             return
 
         stats = self._get_student_training_stats()
         summaries = stats.get("summaries", [])
         if not summaries:
-            self.student_ai_summary.setText(
-                "No training record is available yet. Complete one training attempt first."
-            )
+            self.student_ai_summary.setText(tr("student.no_training_record_available"))
             return
 
         if hasattr(self, "student_ai_summary_btn"):
             self.student_ai_summary_btn.setEnabled(False)
-        self.student_ai_summary.setText("Generating latest training summary from the shared AI API...")
+        if hasattr(self, "student_ai_loading"):
+            self.student_ai_loading.start(
+                tr("ai.loading_title"),
+                tr("ai.student_loading_detail"),
+            )
+        self.student_ai_summary.clear()
         QApplication.processEvents()
 
-        try:
+        def build_report():
             from app.ai_training_agents import create_student_training_agent
 
             agent = create_student_training_agent()
-            summary = agent.summarize_after_training(
+            return agent.summarize_after_training(
                 self.user.username,
                 summaries[0],
                 recent_records=summaries[1:6],
             )
-            self.student_ai_summary.setText(summary)
-        except Exception as e:
-            print(f"[StudentHome] AI summary failed: {e}")
-            self.student_ai_summary.setText(
-                "AI training summary failed. Please check the API configuration and try again."
-            )
-        finally:
+
+        def on_result(summary):
+            self._set_ai_report_content(self.student_ai_summary, summary)
+
+        def on_error(message):
+            print(f"[StudentHome] AI summary failed: {message}")
+            self.student_ai_summary.setText(tr("student.ai_summary_failed"))
+
+        def on_finished():
+            if hasattr(self, "student_ai_loading"):
+                self.student_ai_loading.stop()
             if hasattr(self, "student_ai_summary_btn"):
                 self.student_ai_summary_btn.setEnabled(True)
+            self._student_ai_worker = None
+
+        self._student_ai_worker = AIReportWorker(build_report, self)
+        self._student_ai_worker.result_ready.connect(on_result)
+        self._student_ai_worker.error_ready.connect(on_error)
+        self._student_ai_worker.finished.connect(on_finished)
+        self._student_ai_worker.start()
 
     def _open_student_ai_summary(self):
         self._show_student_home()
         QTimer.singleShot(100, self._generate_student_ai_summary)
+
+    def _set_ai_report_content(self, widget, content):
+        try:
+            if hasattr(widget, "setMarkdown"):
+                widget.setMarkdown(content)
+            else:
+                widget.setPlainText(content)
+        except Exception:
+            try:
+                widget.setPlainText(content)
+            except Exception:
+                widget.setText(content)
 
     def _student_format_seconds(self, seconds):
         if seconds is None:
@@ -1385,7 +1709,7 @@ class StudentShell(QWidget):
         except (TypeError, ValueError):
             return "-"
         minutes, sec = divmod(seconds, 60)
-        return f"{minutes}m {sec}s" if minutes else f"{sec}s"
+        return tr("common.minutes_seconds", minutes=minutes, seconds=sec) if minutes else tr("common.seconds", seconds=sec)
 
     def _student_format_date(self, raw):
         if not raw:
@@ -1397,24 +1721,21 @@ class StudentShell(QWidget):
             return str(raw)[:16]
 
     def _student_training_label(self, mode):
-        labels = {
-            "remove_needle_simulator": "Remove Needle (Simulator)",
-            "remove_needle_no_simulator": "Remove Needle (No Simulator)",
-            "change_dressing": "Change Dressing",
-            "comprehensive": "Comprehensive",
-        }
-        return labels.get(mode, mode or "unknown")
+        label = tr_training_label(mode)
+        if label.startswith("training."):
+            return mode or tr("common.unknown")
+        return label
 
     def _show_elearning_content(self):
         """Show E-learning module with video player."""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
         # Hide content_view (text placeholder)
         self.content_view.setVisible(False)
         
         # Set title
-        self.content_title.setText("E-learning Module")
+        self.content_title.setText(tr("student.elearning_module"))
         self.content_title.setVisible(True)
         
         # Create E-learning container if not exists
@@ -1504,7 +1825,7 @@ class StudentShell(QWidget):
                     cap.release()
                 except Exception as e:
                     # Fallback: just show black button with play icon
-                    self.video_thumbnail.setText("▶ Click to Play")
+                    self.video_thumbnail.setText("Click to Play")
                     self.video_thumbnail.setStyleSheet("""
                         QPushButton {
                             background: #000000;
@@ -1521,7 +1842,7 @@ class StudentShell(QWidget):
                         }
                     """)
             else:
-                self.video_thumbnail.setText("▶ Click to Play")
+                self.video_thumbnail.setText("Click to Play")
                 self.video_thumbnail.setStyleSheet("""
                     QPushButton {
                         background: #000000;
@@ -1654,7 +1975,7 @@ class StudentShell(QWidget):
             back_button_layout.setSpacing(12)
             back_button_layout.setContentsMargins(0, 0, 0, 0)
             
-            btn_back = QPushButton("← Back")
+            btn_back = QPushButton("Back")
             btn_back.setStyleSheet("""
                 QPushButton {
                     background: rgba(200, 200, 200, 0.3);
@@ -1751,7 +2072,7 @@ class StudentShell(QWidget):
             control_layout.setContentsMargins(12, 8, 12, 8)
             
             # Play/Pause button
-            self.btn_play_pause = QPushButton("⏸ Pause")
+            self.btn_play_pause = QPushButton("Pause")
             self.btn_play_pause.setStyleSheet("""
                 QPushButton {
                     background: rgba(77, 163, 255, 0.5);
@@ -1799,7 +2120,7 @@ class StudentShell(QWidget):
             control_layout.addStretch()
             
             # Exit button
-            btn_exit = QPushButton("✕ Exit")
+            btn_exit = QPushButton("Exit")
             btn_exit.setStyleSheet("""
                 QPushButton {
                     background: rgba(255, 80, 80, 0.5);
@@ -1859,20 +2180,20 @@ class StudentShell(QWidget):
             # In PySide6, PlayingState is an enum
             if current_state == QMediaPlayer.PlayingState:
                 self.elearning_media_player.pause()
-                self.btn_play_pause.setText("▶ Play")
+                self.btn_play_pause.setText("Play")
             else:
                 self.elearning_media_player.play()
-                self.btn_play_pause.setText("⏸ Pause")
+                self.btn_play_pause.setText("Pause")
         except Exception as e:
             # Fallback: just toggle play/pause
             try:
                 if hasattr(self, 'elearning_media_player'):
                     if self.elearning_media_player.isPlaying():
                         self.elearning_media_player.pause()
-                        self.btn_play_pause.setText("▶ Play")
+                        self.btn_play_pause.setText("Play")
                     else:
                         self.elearning_media_player.play()
-                        self.btn_play_pause.setText("⏸ Pause")
+                        self.btn_play_pause.setText("Pause")
             except Exception:
                 pass
     
@@ -1914,9 +2235,9 @@ class StudentShell(QWidget):
                 
                 current_state = self.elearning_media_player.playbackState()
                 if current_state == QMediaPlayer.PlayingState:
-                    self.btn_play_pause.setText("⏸ Pause")
+                    self.btn_play_pause.setText("Pause")
                 else:
-                    self.btn_play_pause.setText("▶ Play")
+                    self.btn_play_pause.setText("Play")
         except Exception:
             pass
     
@@ -1999,7 +2320,7 @@ class StudentShell(QWidget):
 
     def _show_practice_options(self):
         """Show practice mode selection buttons."""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
         # Hide content view
@@ -2018,7 +2339,7 @@ class StudentShell(QWidget):
             self._completion_frame.setVisible(False)
         
         # Show and set title
-        self.content_title.setText("Practice Questions")
+        self.content_title.setText(tr("student.practice_questions"))
         self.content_title.setVisible(True)
         
         # Create practice container if not exists
@@ -2124,7 +2445,7 @@ class StudentShell(QWidget):
     
     def _show_topic_options(self):
         """Show topic selection buttons."""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
         # Hide practice options
@@ -2198,7 +2519,7 @@ class StudentShell(QWidget):
             button_layout.addWidget(btn_topic2)
             
             # Back button
-            btn_back = QPushButton("← Back to Practice Menu")
+            btn_back = QPushButton("Back to Practice Menu")
             btn_back.setStyleSheet("""
                 QPushButton {
                     background: rgba(200, 200, 200, 0.3);
@@ -2288,7 +2609,7 @@ class StudentShell(QWidget):
             print(f"[Training] Quiz completed: {correct}/{total} correct, is_correct={is_correct}")
             self.quiz_module.setVisible(False)
             
-            # 恢复Phase 4的拔针操作，并传递答题结果
+            # Resume Phase 4 removal and pass the quiz result.
             if hasattr(self, 'current_training') and self.current_training:
                 # record the quiz result into the training module (so records can include accuracy)
                 try:
@@ -2366,7 +2687,7 @@ class StudentShell(QWidget):
         completion_layout.addWidget(lbl_completion)
         
         # Back to practice menu button
-        btn_back = QPushButton("← Back to Practice Menu")
+        btn_back = QPushButton("Back to Practice Menu")
         btn_back.setStyleSheet("""
             QPushButton {
                 background: rgba(77, 163, 255, 0.3);
@@ -2421,7 +2742,7 @@ class StudentShell(QWidget):
     def _show_practice_records(self):
         """Show practice records with statistics and curve."""
         self.content_view.setVisible(False)
-        self.content_title.setText("Practice Records")
+        self.content_title.setText(tr("student.practice_records"))
         self.content_title.setVisible(True)
         
         # Always recreate the container to ensure fresh display
@@ -2617,7 +2938,7 @@ class StudentShell(QWidget):
             for i, record in enumerate(recent_records, 1):
                 accuracy = record.get("accuracy", 0)
                 bars = int(accuracy / 5)
-                chart_text += f"Attempt {i:2d}: {'█' * bars}{'░' * (20 - bars)} {accuracy}%\n"
+                chart_text += f"Attempt {i:2d}: {'#' * bars}{'.' * (20 - bars)} {accuracy}%\n"
             
             text_widget = QTextEdit()
             text_widget.setReadOnly(True)
@@ -2653,7 +2974,7 @@ class StudentShell(QWidget):
         if hasattr(self, 'student_home_container'):
             self.student_home_container.setVisible(False)
         self.content_view.setVisible(False)
-        self.content_title.setText("Training Records")
+        self.content_title.setText(tr("student.training_records"))
         self.content_title.setVisible(True)
         
         # Always recreate the container to ensure fresh display
@@ -2677,21 +2998,25 @@ class StudentShell(QWidget):
         stats_layout.setSpacing(20)
         
         # Training count
-        self.lbl_training_count = QLabel("Total Trainings: 0")
+        self.lbl_training_count = QLabel(tr("student.total_trainings", count=0))
         self.lbl_training_count.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 700;")
         stats_layout.addWidget(self.lbl_training_count)
+
+        self.lbl_dressing_changes = QLabel(tr("student.dressing_changes") + ": 0")
+        self.lbl_dressing_changes.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
+        stats_layout.addWidget(self.lbl_dressing_changes)
         
         # Total time
-        self.lbl_training_time = QLabel("Total Time: 0s")
+        self.lbl_training_time = QLabel(tr("student.total_time", time=tr("common.seconds", seconds=0)))
         self.lbl_training_time.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
         stats_layout.addWidget(self.lbl_training_time)
         
         # Average time
-        self.lbl_training_avg = QLabel("Average Time: 0s")
+        self.lbl_training_avg = QLabel(tr("student.average_time", time=tr("common.seconds", seconds=0)))
         self.lbl_training_avg.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
         stats_layout.addWidget(self.lbl_training_avg)
 
-        btn_training_ai_summary = QPushButton("Generate AI Summary")
+        btn_training_ai_summary = QPushButton(tr("student.generate_ai_summary_inline"))
         btn_training_ai_summary.setStyleSheet("""
             QPushButton {
                 background: rgba(77, 163, 255, 0.24);
@@ -2744,12 +3069,12 @@ class StudentShell(QWidget):
         charts_layout = QHBoxLayout()
         charts_layout.setSpacing(12)
         
-        # 时间趋势图容器
+        # Time trend chart container.
         time_chart_container = QFrame()
         time_chart_container.setStyleSheet("background: transparent;")
         time_chart_layout = QVBoxLayout(time_chart_container)
         time_chart_layout.setContentsMargins(0, 0, 0, 0)
-        time_chart_title = QLabel("Training Time Trend")
+        time_chart_title = QLabel(tr("student.training_time_trend"))
         time_chart_title.setFont(QFont('Segoe Print', 12, QFont.Bold))
         time_chart_title.setStyleSheet("color: #003366;")
         time_chart_layout.addWidget(time_chart_title)
@@ -2763,7 +3088,7 @@ class StudentShell(QWidget):
         accuracy_chart_container.setStyleSheet("background: transparent;")
         accuracy_chart_layout = QVBoxLayout(accuracy_chart_container)
         accuracy_chart_layout.setContentsMargins(0, 0, 0, 0)
-        accuracy_chart_title = QLabel("Accuracy Trend")
+        accuracy_chart_title = QLabel(tr("student.accuracy_trend"))
         accuracy_chart_title.setFont(QFont('Segoe Print', 12, QFont.Bold))
         accuracy_chart_title.setStyleSheet("color: #003366;")
         accuracy_chart_layout.addWidget(accuracy_chart_title)
@@ -2791,11 +3116,13 @@ class StudentShell(QWidget):
             stats = manager.get_training_statistics(self.user.username)
             
             # Update statistics
-            self.lbl_training_count.setText(f"Total Trainings: {stats['total_trainings']}")
+            self.lbl_training_count.setText(tr("student.total_trainings", count=stats['total_trainings']))
+            if hasattr(self, "lbl_dressing_changes"):
+                self.lbl_dressing_changes.setText(f"{tr('student.dressing_changes')}: {stats.get('change_dressing_count', 0)}")
             total_minutes = int(stats['total_time'] // 60)
-            self.lbl_training_time.setText(f"Total Time: {total_minutes}m {int(stats['total_time'] % 60)}s")
+            self.lbl_training_time.setText(tr("student.total_time", time=tr("common.minutes_seconds", minutes=total_minutes, seconds=int(stats['total_time'] % 60))))
             avg_seconds = int(stats['avg_time'])
-            self.lbl_training_avg.setText(f"Average Time: {avg_seconds}s")
+            self.lbl_training_avg.setText(tr("student.average_time", time=tr("common.seconds", seconds=avg_seconds)))
             
             # Collect records data
             details = stats['details']
@@ -2807,9 +3134,10 @@ class StudentShell(QWidget):
                 training_data = record.get('training_data', {})
                 elapsed_time = training_data.get('elapsed_time', 0)
                 accuracy = training_data.get('accuracy', 0)
-                training_type = training_data.get('training_type', 'unknown')
+                training_type = training_data.get('training_mode') or training_data.get('training_type', 'unknown')
                 elapsed_times.append(elapsed_time)
-                accuracies.append(accuracy)
+                if training_type != "change_dressing" and accuracy:
+                    accuracies.append(accuracy)
                 training_types.append(training_type)
             
             # Update records list
@@ -2818,7 +3146,7 @@ class StudentShell(QWidget):
                 training_data = record.get('training_data', {})
                 elapsed_time = training_data.get('elapsed_time', 0)
                 accuracy = training_data.get('accuracy', 0)
-                training_type = training_data.get('training_type', 'unknown')
+                training_type = training_data.get('training_mode') or training_data.get('training_type', 'unknown')
                 completed_at = record.get('completed_at', 'Unknown')
                 
                 # Format datetime
@@ -2829,8 +3157,14 @@ class StudentShell(QWidget):
                 except:
                     time_str = completed_at[:10]
                 
-                # Create list item with training type and accuracy
-                item_text = f"{time_str} | {training_type} | {elapsed_time:.1f}s | {accuracy:.0f}%"
+                if training_type == "change_dressing":
+                    completed = int(training_data.get("phase4_events_completed") or len(training_data.get("events_results", [])) or 0)
+                    expected = int(training_data.get("expected_events") or completed or 3)
+                    result_text = f"{completed}/{expected} {tr('student.steps')}"
+                else:
+                    result_text = f"{accuracy:.0f}%"
+
+                item_text = f"{time_str} | {self._student_training_label(training_type)} | {elapsed_time:.1f}s | {result_text}"
                 item = QListWidgetItem(item_text)
                 self.training_records_list.addItem(item)
             
@@ -2959,7 +3293,7 @@ class StudentShell(QWidget):
     
     def _init_ai_mentor(self):
         """初始化AI Nursing Mentor"""
-        # 保证属性存在，避免后续访问时报错
+        # Ensure the attribute exists before later access.
         self.ai_mentor = None
         try:
             from app.ai_mentor import AIMentor
@@ -2978,7 +3312,7 @@ class StudentShell(QWidget):
                 print("[MainWindow] Error: API key not configured. Please set API_KEY in app/ai_config_local.py")
                 return None
 
-            # 创建AI导师实例（支持传入 model/base_url）
+            # Create the AI mentor instance, passing model/base_url when supported.
             try:
                 self.ai_mentor = AIMentor(API_URL, api_key, model=MODEL, base_url=BASE_URL)
             except Exception:
@@ -3002,7 +3336,7 @@ class StudentShell(QWidget):
         try:
             from app.ui.ai_mentor_widget import AIMentorWidget
             
-            # 初始化AI Mentor（如果还没初始化）
+            # Initialize AI Mentor if needed.
             if not hasattr(self, 'ai_mentor') or self.ai_mentor is None:
                 self._init_ai_mentor()
             # 如果初始化后仍然没有 ai_mentor，给出用户提示并返回
@@ -3010,8 +3344,8 @@ class StudentShell(QWidget):
                 from PySide6.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self,
-                    "AI Mentor Not Configured",
-                    "AI Mentor is not configured.\n\nPlease set API_KEY in app/ai_config_local.py."
+                    tr("student.ai_mentor_not_configured_title"),
+                    tr("student.ai_mentor_not_configured_body")
                 )
                 return
             
@@ -3020,13 +3354,15 @@ class StudentShell(QWidget):
                 self.ai_mentor_widget = AIMentorWidget(self.ai_mentor, self.content)
                 content_l = self.content.layout()
                 content_l.insertWidget(2, self.ai_mentor_widget)
+            elif hasattr(self.ai_mentor_widget, "apply_language_texts"):
+                self.ai_mentor_widget.apply_language_texts()
             
-            # 隐藏所有其他容器
+            # Hide all other containers.
             self._hide_all_content_containers()
             
             # 显示AI Mentor
             self.ai_mentor_widget.setVisible(True)
-            self.content_title.setText("AI Nursing Mentor")
+            self.content_title.setText(tr("student.ai_mentor"))
             self.content_title.setVisible(True)
             self._refresh_student_inline_text_colors()
             
@@ -3039,12 +3375,8 @@ class StudentShell(QWidget):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(
                 self,
-                "Error",
-                "Failed to load AI Mentor.\n\n"
-                "Please ensure:\n"
-                "1. API_KEY is set in app/ai_config_local.py\n"
-                "2. MODEL / BASE_URL are set in app/ai_config_local.py\n"
-                "3. Restart the application"
+                tr("student.ai_mentor_error_title"),
+                tr("student.ai_mentor_error_body")
             )
 
     def _save_practice_record(self, correct, total):
@@ -3086,7 +3418,7 @@ class StudentShell(QWidget):
 
     def _show_simulation_options(self):
         """Show three training option buttons in simulation page."""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
         # Hide welcome quote and content view
@@ -3094,7 +3426,7 @@ class StudentShell(QWidget):
         self.content_view.setVisible(False)
         
         # Show and set title
-        self.content_title.setText("Simulation Training")
+        self.content_title.setText(tr("student.simulation_training"))
         self.content_title.setVisible(True)
         
         # Create container for the three buttons
@@ -3105,12 +3437,12 @@ class StudentShell(QWidget):
             button_layout.setSpacing(12)
             button_layout.setContentsMargins(0, 0, 0, 0)
             
-            # Four training options: Removal split into simulator/no-simulator modes
+            # Training modules. Catheter removal is one active workflow in the current hardware setup.
             options = [
-                ("Comprehensive\nTraining", "comprehensive"),
-                ("Change dressing of\nepidural catheter\ninsertion site", "change_dressing"),
-                ("Removal of\nepidural catheter\n(Simulator)", "remove_needle_simulator"),
-                ("Removal of\nepidural catheter\n(No Simulator)", "remove_needle_no_simulator")
+                (tr("student.comprehensive_training"), "comprehensive"),
+                (tr("student.change_dressing_training"), "change_dressing"),
+                (tr("student.removal_training"), "remove_needle_simulator"),
+                (tr("student.training_records"), "training_records")
             ]
             
             for option_text, option_key in options:
@@ -3186,13 +3518,13 @@ class StudentShell(QWidget):
     
     def _show_settings(self):
         """Show Settings page with both camera and font configuration"""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
-        # 停止任何正在进行的训练
+        # Stop any active training.
         self._stop_current_training()
         
-        # 清理E-learning视频播放器
+        # Clean up the E-learning video player.
         self._cleanup_elearning_video()
         
         # 清理Practice相关容器
@@ -3209,7 +3541,7 @@ class StudentShell(QWidget):
             self.simulator_conn_widget.setVisible(False)
         
         # Show title
-        self.content_title.setText("Settings")
+        self.content_title.setText(tr("common.settings"))
         self.content_title.setVisible(True)
         self.content_view.setVisible(False)
         
@@ -3226,8 +3558,8 @@ class StudentShell(QWidget):
             tabs_layout = QHBoxLayout(tabs_frame)
             tabs_layout.setContentsMargins(0, 0, 0, 0)
             
-            # 摄像头标签按钮
-            self.btn_camera_tab = QPushButton("Camera Settings")
+            # Camera tab button.
+            self.btn_camera_tab = QPushButton(tr("student.camera_settings"))
             self.btn_camera_tab.setMinimumWidth(150)
             self.btn_camera_tab.setMinimumHeight(40)
             self.btn_camera_tab.setStyleSheet("""
@@ -3244,7 +3576,7 @@ class StudentShell(QWidget):
             self.btn_camera_tab.clicked.connect(self._show_camera_settings_tab)
             
             # 字体标签按钮
-            self.btn_font_tab = QPushButton("Font Settings")
+            self.btn_font_tab = QPushButton(tr("student.font_settings"))
             self.btn_font_tab.setMinimumWidth(150)
             self.btn_font_tab.setMinimumHeight(40)
             self.btn_font_tab.setStyleSheet("""
@@ -3277,17 +3609,17 @@ class StudentShell(QWidget):
         
         self.settings_container.setVisible(True)
         
-        # 默认显示摄像头设置
+        # Show camera settings by default.
         self._show_camera_settings_tab()
         self._refresh_student_inline_text_colors()
     
     def _show_camera_settings_tab(self):
-        """显示摄像头设置标签"""
+        """Show camera settings tab."""
         # 隐藏字体settings widget
         if hasattr(self, 'settings_widget'):
             self.settings_widget.setVisible(False)
         
-        # 清除之前的内容
+        # Clear previous content.
         while self.settings_content_layout.count():
             widget = self.settings_content_layout.takeAt(0).widget()
             if widget:
@@ -3318,7 +3650,7 @@ class StudentShell(QWidget):
             QPushButton:hover { background: #D0D0D0; }
         """)
         
-        # 创建或获取摄像头管理器
+        # Create or reuse the camera manager.
         if not hasattr(self, 'camera_manager_widget'):
             self.camera_manager_widget = CameraManager()
         
@@ -3327,12 +3659,12 @@ class StudentShell(QWidget):
         self._refresh_student_inline_text_colors()
     
     def _show_font_settings_tab(self):
-        """显示字体设置标签"""
+        """Show font settings tab."""
         # 隐藏摄像头settings widget
         if hasattr(self, 'camera_manager_widget'):
             self.camera_manager_widget.setVisible(False)
         
-        # 清除之前的内容
+        # Clear previous content.
         while self.settings_content_layout.count():
             widget = self.settings_content_layout.takeAt(0).widget()
             if widget:
@@ -3378,8 +3710,16 @@ class StudentShell(QWidget):
         
         # Save font setting to user_settings.json
         try:
-            settings = {"font": font_name}
             settings_path = os.path.join(os.path.dirname(__file__), "..", "..", "user_settings.json")
+            settings = {}
+            if os.path.exists(settings_path):
+                try:
+                    with open(settings_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    settings = loaded if isinstance(loaded, dict) else {}
+                except Exception:
+                    settings = {}
+            settings["font"] = font_name
             os.makedirs(os.path.dirname(settings_path), exist_ok=True)
             with open(settings_path, 'w', encoding='utf-8') as f:
                 json.dump(settings, f, indent=4, ensure_ascii=False)
@@ -3420,13 +3760,13 @@ class StudentShell(QWidget):
     
     def _show_simulator_connection(self):
         """Show Simulator Connection debug page"""
-        # 隐藏所有其他内容容器
+        # Hide all other content containers.
         self._hide_all_content_containers()
         
-        # 停止任何正在进行的训练
+        # Stop any active training.
         self._stop_current_training()
         
-        # 清理E-learning视频播放器
+        # Clean up the E-learning video player.
         self._cleanup_elearning_video()
         
         # 清理Practice相关容器
@@ -3439,7 +3779,7 @@ class StudentShell(QWidget):
         self.welcome_quote.setVisible(False)
         
         # Show title
-        self.content_title.setText("Simulator")
+        self.content_title.setText(tr("student.simulator"))
         self.content_title.setVisible(True)
         self.content_view.setVisible(False)
         
@@ -3456,16 +3796,16 @@ class StudentShell(QWidget):
             wifi_frame.setStyleSheet("background: transparent;")
             wifi_l = QHBoxLayout(wifi_frame)
             
-            wifi_label = QLabel("Hardware Link:")
+            wifi_label = QLabel(tr("student.hardware_link"))
             wifi_label.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 700;")
             wifi_l.addWidget(wifi_label)
             
-            self.lbl_current_wifi = QLabel("Checking hardware link...")
+            self.lbl_current_wifi = QLabel(tr("student.hardware_checking"))
             self.lbl_current_wifi.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #234f8d; font-weight: 600;")
             self.lbl_current_wifi.setMinimumWidth(250)
             wifi_l.addWidget(self.lbl_current_wifi)
             
-            btn_refresh = QPushButton("Refresh")
+            btn_refresh = QPushButton(tr("common.refresh"))
             btn_refresh.setStyleSheet("""
                 QPushButton {
                     background: rgba(77, 163, 255, 0.3);
@@ -3689,7 +4029,7 @@ class StudentShell(QWidget):
             self.lbl_connection_status.setText(waiting_text)
             self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #003366; font-weight: 600;")
         except Exception as e:
-            self.lbl_connection_status.setText(f"✗ Error")
+            self.lbl_connection_status.setText("Error")
             self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #FF0000; font-weight: 700;")
     
     def _on_connection_result(self, success: bool, message: str):
@@ -3697,12 +4037,11 @@ class StudentShell(QWidget):
         try:
             if success:
                 # Green text for success
-                self.lbl_connection_status.setText(f"✓ {message}")
+                self.lbl_connection_status.setText(f"OK {message}")
                 self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #00AA00; font-weight: 700;")
             else:
                 # Red text for failure
-                self.lbl_connection_status.setText(f"✗ {message}")
+                self.lbl_connection_status.setText(f"Error {message}")
                 self.lbl_connection_status.setStyleSheet("font-family: 'Segoe Print'; font-size: 16px; color: #FF0000; font-weight: 700;")
         except Exception:
             pass
-

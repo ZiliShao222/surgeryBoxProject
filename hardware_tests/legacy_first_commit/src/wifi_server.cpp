@@ -1,0 +1,73 @@
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include "wifi_server.h"
+#include "servo_brake.h"
+#include "motor.h"
+#include "events.h"
+#include "encoder.h"
+
+WiFiServer server(1234);
+WiFiClient client;
+
+void initWiFiHotspot() {
+    WiFi.softAP("MyBrakeMachine", "12345678");
+    server.begin();
+    Serial.println("[WiFi] Hotspot started: SSID=MyBrakeMachine, Password=12345678");
+}
+
+String readCommandFromClient() {
+    if (!client || !client.connected()) {
+        client = server.accept();
+        return "";
+    }
+    if (client.available()) {
+        return client.readStringUntil('\n');
+    }
+    return "";
+}
+
+void handleWiFiCommands() {
+    String cmd = readCommandFromClient();
+    if (cmd == "") return;
+    cmd.trim();
+    Serial.printf("[WiFi] Command: %s", cmd.c_str());
+
+    if (cmd == "Start") startEventSequence();
+    else if (cmd == "Stop") servoBrakeLock();
+    else if (cmd == "Winding") motorWindBack();
+    else {
+        // 其他事件，如OK, OK1, Continue等在events.cpp中等待处理
+    }
+}
+
+void sendSignal(String sig) {
+    if (client && client.connected()) {
+        client.println(sig);
+        Serial.printf("[WiFi] Signal sent: %s", sig.c_str());
+    }
+}
+
+void waitForCmd(String target) {
+    while (true) {
+        String cmd = readCommandFromClient();
+        if (cmd == target) break;
+        delay(50);
+    }
+}
+
+String waitForCmdAny(std::initializer_list<String> targets) {
+    while (true) {
+        String cmd = readCommandFromClient();
+        for (auto &t : targets) {
+            if (cmd == t) return cmd;
+        }
+        delay(50);
+    }
+}
+
+void waitShortPull() {
+    float startDist = readDistance();
+    while (readDistance() < startDist + 0.5) { // 短拉
+        delay(10);
+    }
+}

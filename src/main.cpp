@@ -27,6 +27,7 @@ void loop() {
     //handleWiFiCommands();   // Legacy TCP handler
     handleUDPMessages();
     handleHttpServer();
+    motorUpdateWindBack();
     processEncoderEvents(); // Check encoder distance and trigger events
 
     // Periodically log encoder ticks, distance, and speed (only when position changes)

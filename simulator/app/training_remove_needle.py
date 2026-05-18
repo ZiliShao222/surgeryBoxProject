@@ -9,6 +9,7 @@ import os
 import time
 import socket
 from datetime import datetime
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QRect, QPoint, QUrl
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QPushButton
 from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QBrush
@@ -17,6 +18,31 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from app.camera_manager import CameraThread
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.training_records import get_training_record_manager
+
+
+_SIMULATOR_DIR = Path(__file__).resolve().parents[1]
+_PROJECT_DIR = _SIMULATOR_DIR.parent
+
+
+def _asset_path(filename: str) -> str:
+    """Resolve simulator assets no matter whether the app is run from repo root or simulator/."""
+    raw = str(filename).replace("\\", "/")
+    path = Path(raw)
+    if path.is_absolute():
+        return str(path)
+    if raw.startswith("assets/"):
+        raw = raw[len("assets/"):]
+
+    candidates = [
+        _SIMULATOR_DIR / "assets" / raw,
+        Path.cwd() / "assets" / raw,
+        Path.cwd().parent / "assets" / raw,
+        _PROJECT_DIR / "assets" / raw,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
 
 
 class ExternalUDPListener(QThread):
@@ -137,7 +163,7 @@ class SuccessDisplay:
             # 播放成功音频
             if audio_path and self.media_player:
                 try:
-                    self.media_player.setSource(QUrl.fromLocalFile(audio_path))
+                    self.media_player.setSource(QUrl.fromLocalFile(_asset_path(audio_path)))
                     self.media_player.play()
                 except Exception:
                     pass
@@ -403,10 +429,11 @@ class TextDisplayWidget(QFrame):
     def play_audio(self, audio_path: str):
         """播放音频文件"""
         try:
+            resolved_path = _asset_path(audio_path)
             self.media_player.stop()  # 确保重置播放器状态
-            self.media_player.setSource(QUrl.fromLocalFile(audio_path))
+            self.media_player.setSource(QUrl.fromLocalFile(resolved_path))
             self.media_player.play()
-            print(f"[TextDisplay] Playing audio: {audio_path}")
+            print(f"[TextDisplay] Playing audio: {resolved_path}")
         except Exception as e:
             print(f"[TextDisplay] Error playing audio: {e}")
 
@@ -426,6 +453,7 @@ class RemoveNeedleTraining(QWidget):
         super().__init__(parent)
         print(f"[RemoveNeedleTraining] __init__ called with parent={parent}, mode={training_mode}")
         self.setObjectName("RemoveNeedleTraining")
+        self._cleanup_done = False
         self.training_mode = training_mode  # "remove_needle_simulator" or "remove_needle_no_simulator"
         self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
         if self.hardware_transport not in ("udp", "off"):
@@ -447,6 +475,8 @@ class RemoveNeedleTraining(QWidget):
         self.last_event_msg = ""
         self.last_hardware_message_time = 0.0
         self._last_position_message_time = 0.0
+        self._last_phase4_status_log_time = 0.0
+        self._last_phase4_progress_log_time = 0.0
         
         # 初始化组件
         print(f"[RemoveNeedleTraining] Setting up UI")
@@ -505,10 +535,10 @@ class RemoveNeedleTraining(QWidget):
         self.current_user = None  # 用户名（由主窗口设置）
         
         # 音频路径
-        self.audio_guide_1 = "assets/training_remove_needle_guide1.mp3"
-        self.audio_guide_2 = "assets/training_remove_needle_guide2.mp3"
-        self.audio_guide_3 = "assets/training_remove_needle_guide3.mp3"
-        self.audio_success = "assets/success.mp3"
+        self.audio_guide_1 = _asset_path("training_remove_needle_guide1.mp3")
+        self.audio_guide_2 = _asset_path("training_remove_needle_guide2.mp3")
+        self.audio_guide_3 = _asset_path("training_remove_needle_guide3.mp3")
+        self.audio_success = _asset_path("success.mp3")
         
         # 初始化媒体播放器（用于播放pain.mp3）
         try:
@@ -568,6 +598,11 @@ class RemoveNeedleTraining(QWidget):
         self.text_display.setGeometry(0, 0, self.camera_display.width(), 200)
         if hasattr(self, "info_overlay") and self.info_overlay:
             self.info_overlay.setGeometry(10, 10, 460, 150)
+
+    def closeEvent(self, event):
+        """Ensure camera/UDP threads are stopped before Qt destroys this widget."""
+        self.cleanup()
+        super().closeEvent(event)
     
     def _setup_camera(self):
         """设置摄像头"""
@@ -576,6 +611,8 @@ class RemoveNeedleTraining(QWidget):
             self.camera_thread = CameraThread(camera_index=0)
             print(f"[RemoveNeedleTraining._setup_camera] Connecting frame_ready signal")
             self.camera_thread.frame_ready.connect(self._on_frame_ready)
+            if hasattr(self.camera_thread, "error"):
+                self.camera_thread.error.connect(self._on_camera_error)
             print(f"[RemoveNeedleTraining._setup_camera] Starting camera thread")
             self.camera_thread.start()
             print(f"[RemoveNeedleTraining._setup_camera] Camera thread started, is_running={self.camera_thread.isRunning()}")
@@ -584,6 +621,14 @@ class RemoveNeedleTraining(QWidget):
             import traceback
             traceback.print_exc()
             self.camera_display.setText(f"Camera Error: {str(e)[:50]}")
+
+    def _on_camera_error(self, message: str):
+        print(f"[RemoveNeedleTraining._setup_camera] Camera error: {message}")
+        try:
+            self.camera_display.setText(f"Camera Error:\n{message}")
+            self.camera_display.setStyleSheet("background: black; color: #ffdddd; font-size: 22px;")
+        except Exception:
+            pass
     
     def _setup_hand_detector(self):
         """设置手势检测器"""
@@ -591,7 +636,7 @@ class RemoveNeedleTraining(QWidget):
         
         # 加载indexfinger.png
         try:
-            self.finger_icon = cv2.imread("assets/indexfinger.png", cv2.IMREAD_UNCHANGED)
+            self.finger_icon = cv2.imread(_asset_path("indexfinger.png"), cv2.IMREAD_UNCHANGED)
             if self.finger_icon is not None:
                 print(f"[RemoveNeedleTraining] Loaded indexfinger.png: {self.finger_icon.shape}")
             else:
@@ -603,7 +648,7 @@ class RemoveNeedleTraining(QWidget):
         
         # 加载removal1-1.png (Phase 1 文字图像)
         try:
-            self.phase1_icon = cv2.imread("assets/removal1-1.png", cv2.IMREAD_UNCHANGED)
+            self.phase1_icon = cv2.imread(_asset_path("removal1-1.png"), cv2.IMREAD_UNCHANGED)
             if self.phase1_icon is not None:
                 print(f"[RemoveNeedleTraining] Loaded removal1-1.png: {self.phase1_icon.shape}")
             else:
@@ -615,7 +660,7 @@ class RemoveNeedleTraining(QWidget):
         
         # 加载medicaldressing.png (Phase 3 医用贴图像)
         try:
-            self.medical_dressing_icon = cv2.imread("assets/medicaldressing.png", cv2.IMREAD_UNCHANGED)
+            self.medical_dressing_icon = cv2.imread(_asset_path("medicaldressing.png"), cv2.IMREAD_UNCHANGED)
             if self.medical_dressing_icon is not None:
                 print(f"[RemoveNeedleTraining] Loaded medicaldressing.png: {self.medical_dressing_icon.shape}")
             else:
@@ -629,7 +674,7 @@ class RemoveNeedleTraining(QWidget):
         self.blood_stain_icons = []
         for i in range(1, 4):  # blood1.png, blood2.png, blood3.png
             try:
-                blood_icon = cv2.imread(f"assets/blood{i}.png", cv2.IMREAD_UNCHANGED)
+                blood_icon = cv2.imread(_asset_path(f"blood{i}.png"), cv2.IMREAD_UNCHANGED)
                 if blood_icon is not None:
                     self.blood_stain_icons.append(blood_icon)
                     print(f"[RemoveNeedleTraining] Loaded blood{i}.png: {blood_icon.shape}")
@@ -640,7 +685,7 @@ class RemoveNeedleTraining(QWidget):
         
         # 加载 medicalcotton.png (Phase 3.5 擦拭血迹时使用)
         try:
-            self.medical_cotton_icon = cv2.imread("assets/medicalcotton.png", cv2.IMREAD_UNCHANGED)
+            self.medical_cotton_icon = cv2.imread(_asset_path("medicalcotton.png"), cv2.IMREAD_UNCHANGED)
             if self.medical_cotton_icon is not None:
                 print(f"[RemoveNeedleTraining] Loaded medicalcotton.png: {self.medical_cotton_icon.shape}")
             else:
@@ -726,7 +771,7 @@ class RemoveNeedleTraining(QWidget):
     def _play_phase_1_audio(self):
         """播放Phase 1的音频"""
         try:
-            audio_path = "assets/removal1-1.mp3"
+            audio_path = _asset_path("removal1-1.mp3")
             self.text_display.play_audio(audio_path)
             print(f"[Phase 1] Playing audio: {audio_path}")
         except Exception as e:
@@ -1741,6 +1786,8 @@ class RemoveNeedleTraining(QWidget):
         self.seq_info = ""
         self.last_event_msg = ""
         self._last_position_message_time = 0.0
+        self._last_phase4_status_log_time = 0.0
+        self._last_phase4_progress_log_time = 0.0
         
         # 显示Phase 4指导文字
         guide_text = "Pull out the epidural catheter smoothly and steadily."
@@ -1850,8 +1897,36 @@ class RemoveNeedleTraining(QWidget):
         }
         if m in event_to_quiz:
             self.last_event_msg = msg
+            self._sync_progress_from_hardware_event(m)
             self._update_info_overlay()
             self._trigger_hardware_quiz(event_to_quiz[m], m)
+
+    def _sync_progress_from_hardware_event(self, event_name: str):
+        """Move the UI to the event position if POS packets are sparse or delayed."""
+        event_indices = {
+            "pain": 0,
+            "pain2": 1,
+            "highdamp": 2,
+            "lowdamp": 3,
+        }
+        fallback_cm = {
+            "pain": 5.0,
+            "pain2": 10.0,
+            "highdamp": 14.0,
+            "lowdamp": 18.0,
+            "keep": 19.0,
+        }
+        progress_cm = fallback_cm.get(event_name)
+        try:
+            idx = event_indices.get(event_name)
+            events_queue = self.pull_config.get("events_queue", None) if isinstance(self.pull_config, dict) else None
+            if idx is not None and events_queue and idx < len(events_queue):
+                progress_cm = float(events_queue[idx][0])
+        except Exception:
+            pass
+
+        if progress_cm is not None:
+            self._handle_phase4_external_progress(progress_cm)
 
     def _apply_hardware_sequence(self, seq_body: str):
         """Use the MCU sequence distances for the UI trigger thresholds when available."""
@@ -1899,7 +1974,12 @@ class RemoveNeedleTraining(QWidget):
             evt_line = f"Last Event: {self.last_event_msg}" if self.last_event_msg else "Last Event: none"
             pos_line = f"Pos: {self.external_pos_cm:.2f} cm"
             speed_line = f"Speed: {self.external_speed_cmps:.2f} cm/s"
-            self.info_overlay.setText("\n".join([seq_line, evt_line, pos_line, speed_line]))
+            if self.last_hardware_message_time:
+                hw_age = time.time() - self.last_hardware_message_time
+                hw_line = f"HW: last {hw_age:.1f}s ago"
+            else:
+                hw_line = "HW: no telemetry"
+            self.info_overlay.setText("\n".join([seq_line, evt_line, pos_line, speed_line, hw_line]))
             self.info_overlay.setVisible(True)
             self.info_overlay.raise_()
         except Exception as exc:
@@ -1910,6 +1990,11 @@ class RemoveNeedleTraining(QWidget):
         if self.current_phase != 3:
             return
         now = time.time()
+        if distance_cm < -0.05:
+            print(
+                "[External] Negative encoder distance received "
+                f"({distance_cm:.2f} cm). Check encoder A/B wiring or ENCODER_SIGN."
+            )
         last_msg_time = getattr(self, "_last_position_message_time", 0.0)
         if last_msg_time and self.external_pos_cm:
             dt = max(0.001, now - last_msg_time)
@@ -1931,6 +2016,44 @@ class RemoveNeedleTraining(QWidget):
             and self.last_hardware_message_time > 0
             and time.time() - self.last_hardware_message_time < 2.0
         )
+
+    def _phase4_hardware_status_text(self):
+        if not (self.use_hardware_pull and self.hardware_transport == "udp"):
+            return "HW: off"
+        if self.last_hardware_message_time <= 0:
+            return "HW: waiting telemetry"
+        hw_age = time.time() - self.last_hardware_message_time
+        if hw_age < 2.0:
+            return f"HW: active {self.external_pos_cm:.2f}cm"
+        return f"HW: stale {hw_age:.1f}s"
+
+    def _draw_phase4_status(self, frame):
+        """Show enough Phase 4 state to tell whether AR, hand tracking, or hardware is stuck."""
+        height = frame.shape[0]
+        seq_line = f"Seq: {self.seq_info}" if self.seq_info else "Seq: waiting"
+        evt_line = f"Last Event: {self.last_event_msg}" if self.last_event_msg else "Last Event: none"
+        lines = [
+            "Pull input: hardware encoder only",
+            self._phase4_hardware_status_text(),
+            f"{seq_line} | {evt_line}",
+        ]
+
+        x = 20
+        y = max(110, height - 88)
+        for idx, line in enumerate(lines):
+            yy = y + idx * 26
+            cv2.putText(frame, line, (x + 1, yy + 1), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 0, 0), 3)
+            cv2.putText(frame, line, (x, yy), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (220, 255, 220), 2)
+
+        now = time.time()
+        if now - getattr(self, "_last_phase4_status_log_time", 0.0) > 1.0:
+            print(
+                "[Phase 4 Debug] "
+                f"pull_cm={self.needle_pulled_distance_cm:.2f}, max_cm={self.max_pulled_distance_cm:.2f}, "
+                f"{self._phase4_hardware_status_text()}, seq={self.seq_info or 'waiting'}, "
+                f"last_event={self.last_event_msg or 'none'}"
+            )
+            self._last_phase4_status_log_time = now
     
     def _generate_pull_config(self):
         """
@@ -2016,87 +2139,14 @@ class RemoveNeedleTraining(QWidget):
         # 检测手指捏着动作（使用拇指尖和食指PIP）
         # MediaPipe关键点：4=拇指尖, 3=拇指中间关节
         #                  8=食指尖, 7=食指中间关节（PIP）
-        is_pinching = False
-        pinch_y = None
-        hand_near_needle = False  # 标记是否在黄点附近（仅用于显示绿色/黄色）
-        
-        for hand_data in hand_data_list:
-            joints = hand_data.get('joints', [])
-            if len(joints) >= 21:
-                # 获取拇指尖（关键点4）和食指PIP（关键点7）- 反应最快
-                thumb_tip = joints[4]
-                index_pip = joints[7]
-                t_x = thumb_tip.get('x', 0) if isinstance(thumb_tip, dict) else thumb_tip[0]
-                t_y = thumb_tip.get('y', 0) if isinstance(thumb_tip, dict) else thumb_tip[1]
-                i_x = index_pip.get('x', 0) if isinstance(index_pip, dict) else index_pip[0]
-                i_y = index_pip.get('y', 0) if isinstance(index_pip, dict) else index_pip[1]
-                
-                # 检测捏着（拇指尖和食指PIP距离 < 50像素 - 非常灵敏）
-                distance = np.sqrt((t_x - i_x)**2 + (t_y - i_y)**2)
-                if distance < 50:
-                    is_pinching = True
-                    pinch_y = t_y  # 用拇指尖的Y位置（反应最快）
-                    
-                    # 检查是否在黄点附近（仅用于点的颜色显示）
-                    yellow_point_y = self.needle_head_y + self.max_pulled_distance
-                    if abs(pinch_y - yellow_point_y) < 40:
-                        hand_near_needle = True
-                    break
-        
-        # 更新拔针状态
-        if is_pinching and pinch_y is not None:
-            # 只有在绿色状态（手在黄点附近）拉才计数
-            # 保留原来的相对计算逻辑，但只在hand_near_needle时更新max_pulled_distance
-            if hand_near_needle:
-                # 简化逻辑：在绿点区域时，按每帧拇指Y的增量直接累加到已拉出距离
-                # 这样用户拇指往下移动多少，线就移动多少（更直观、实时）
-                if self.last_pinch_y is not None:
-                    delta = pinch_y - self.last_pinch_y
-                    if delta > 0:
-                        self.max_pulled_distance += delta
-
-                # 限制最大值到线的完整长度（像素）
-                if self.max_pulled_distance > self.needle_full_length:
-                    self.max_pulled_distance = self.needle_full_length
-            
-            # 永远显示max_pulled_distance（不让线回退）
-            self.needle_pulled_distance = min(self.max_pulled_distance, self.needle_full_length)
-            
-            # 转换为厘米
-            self.max_pulled_distance_cm = (self.max_pulled_distance / self.needle_full_length) * self.needle_full_length_cm
-            self.needle_pulled_distance_cm = (self.needle_pulled_distance / self.needle_full_length) * self.needle_full_length_cm
-            
-            # 记录历史用于速度计算
-            self.pinch_history.append((time.time(), pinch_y))
-            
-            # 计算拔的速度（最近100ms内的速度）
-            current_time = time.time()
-            recent_pinches = [p for p in self.pinch_history if current_time - p[0] < 0.1]
-            if len(recent_pinches) >= 2:
-                time_diff = recent_pinches[-1][0] - recent_pinches[0][0]
-                if time_diff > 0:
-                    speed = abs(recent_pinches[-1][1] - recent_pinches[0][1]) / time_diff  # 像素/秒
-                    # 如果速度过快（> 800像素/秒）
-                    if speed > 800:
-                        self.pull_speed_warning_time = current_time
-            
-            self.last_pinch_y = pinch_y
-            self.pinching = True
-            
-            # 更新手是否在黄点附近的state（一旦在黄点附近捏着，保持状态直到手松开）
-            if hand_near_needle:
-                self.hand_pinching_near_needle = True
-        else:
-            self.pinching = False
-            self.pinch_history = []
-            # 手松开时重置状态，下次捏住时重新开始计算增量
-            self.pull_start_y = None
-            self.last_pinch_y = None
-            self.hand_pinching_near_needle = False  # 手松开时重置state
-        
-        # 清除超过1秒的历史数据
+        # Phase 4 pull distance is hardware-only. Camera/hand landmarks are only
+        # used by earlier AR phases; POS/PULL/DIST packets update the catheter line.
         current_time = time.time()
-        self.pinch_history = [p for p in self.pinch_history if current_time - p[0] < 1.0]
+        self.pinching = False
+        self.pinch_history = []
+        self.pull_start_y = None
+        self.last_pinch_y = None
+        self.hand_pinching_near_needle = False
         
         # 绘制线头（针线）
         # 线的顶部固定在needle_head_y，底部根据拉出距离扩展
@@ -2108,13 +2158,14 @@ class RemoveNeedleTraining(QWidget):
         # 绘制黄点（显示当前已拉出的最大距离）
         # 如果手在黄点附近且捏着，显示绿色；保持这个状态直到手完全松开
         yellow_point_y = int(self.needle_head_y + self.needle_pulled_distance)
-        point_color = (0, 255, 0) if self.hand_pinching_near_needle else (0, 255, 255)  # 绿色或黄色
+        point_color = (0, 255, 0) if self._hardware_pull_active() else (0, 255, 255)  # 硬件活跃时绿色，否则黄色
         cv2.circle(frame, (self.needle_x, yellow_point_y), 10, point_color, -1)
         
         # 显示拉出的厘米数
         pull_text = f"Pull: {self.needle_pulled_distance_cm:.1f} cm / {self.needle_full_length_cm} cm"
         cv2.putText(frame, pull_text, (20, 40),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        self._draw_phase4_status(frame)
         
         # 显示速度过快警告
         if self.pull_speed_warning_time and (current_time - self.pull_speed_warning_time) < 1.5:
@@ -2142,7 +2193,9 @@ class RemoveNeedleTraining(QWidget):
             if next_idx < len(events_queue):
                 dist_cm, evt_type = events_queue[next_idx]
                 threshold_px = (dist_cm / self.needle_full_length_cm) * self.needle_full_length
-                print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Next event: {evt_type}@{dist_cm:.1f}cm (px {threshold_px:.0f}), Progress: {self.phase4_events_completed}/{len(events_queue)}")
+                if current_time - getattr(self, "_last_phase4_progress_log_time", 0.0) > 0.75:
+                    print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Next event: {evt_type}@{dist_cm:.1f}cm (px {threshold_px:.0f}), Progress: {self.phase4_events_completed}/{len(events_queue)}")
+                    self._last_phase4_progress_log_time = current_time
                 if self.max_pulled_distance >= threshold_px:
                     # 触发对应事件
                     if evt_type == 'Q3':
@@ -2171,7 +2224,9 @@ class RemoveNeedleTraining(QWidget):
                 q5_threshold = (low_damp_len / self.needle_full_length_cm) * self.needle_full_length
 
                 # 调试输出
-                print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Events: {self.phase4_events_completed}/4, Thresholds(px): Q3_1={q3_first_threshold:.0f}, Q3_2={q3_second_threshold:.0f}, Q4={q4_threshold:.0f}, Q5={q5_threshold:.0f}")
+                if current_time - getattr(self, "_last_phase4_progress_log_time", 0.0) > 0.75:
+                    print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Events: {self.phase4_events_completed}/4, Thresholds(px): Q3_1={q3_first_threshold:.0f}, Q3_2={q3_second_threshold:.0f}, Q4={q4_threshold:.0f}, Q5={q5_threshold:.0f}")
+                    self._last_phase4_progress_log_time = current_time
 
                 if self.phase4_events_completed == 0 and self.max_pulled_distance >= q3_first_threshold:
                     print(f"[Phase 4] Event 1/4: First scream at {self.max_pulled_distance_cm:.1f}cm - triggering Q3")
@@ -2214,7 +2269,7 @@ class RemoveNeedleTraining(QWidget):
         # 播放pain.mp3音频
         if self.media_player:
             try:
-                pain_audio_path = os.path.join(os.getcwd(), 'assets', 'pain.mp3')
+                pain_audio_path = _asset_path("pain.mp3")
                 if os.path.exists(pain_audio_path):
                     self.media_player.setSource(QUrl.fromLocalFile(pain_audio_path))
                     self.media_player.play()
@@ -2348,7 +2403,39 @@ class RemoveNeedleTraining(QWidget):
     def cleanup(self):
         """清理资源"""
         try:
+            if getattr(self, "_cleanup_done", False):
+                return
+            self._cleanup_done = True
             print(f"[RemoveNeedleTraining.cleanup] Starting cleanup")
+            for player in (
+                getattr(self, "media_player", None),
+                getattr(getattr(self, "text_display", None), "media_player", None),
+                getattr(getattr(self, "success_display", None), "media_player", None),
+            ):
+                try:
+                    if player:
+                        player.stop()
+                        player.setSource(QUrl())
+                except Exception:
+                    pass
+            try:
+                if self.external_thread:
+                    print("[External] Stopping external UDP listener")
+                    self.external_thread.stop_flag = True
+                    try:
+                        # Wake the blocking recvfrom() call so the thread can exit promptly.
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                        sock.sendto(b"", ("127.0.0.1", self.local_udp_port))
+                        sock.close()
+                    except Exception:
+                        pass
+                    try:
+                        self.external_thread.wait(1000)
+                    except Exception:
+                        pass
+                    self.external_thread = None
+            except Exception:
+                pass
             
             # 停止阶段计时器
             if self.phase_timer:
@@ -2367,6 +2454,16 @@ class RemoveNeedleTraining(QWidget):
                 print(f"[RemoveNeedleTraining.cleanup] Stopping success_timer")
                 self.success_display.success_timer.stop()
                 self.success_display.success_timer = None
+            if self.success_display and self.success_display.pass_timer:
+                print(f"[RemoveNeedleTraining.cleanup] Stopping pass_timer")
+                self.success_display.pass_timer.stop()
+                self.success_display.pass_timer = None
+
+            try:
+                if self.hand_detector and hasattr(self.hand_detector, "close"):
+                    self.hand_detector.close()
+            except Exception:
+                pass
             
             # 停止摄像头线程并安全等待结束
             if self.camera_thread:
@@ -2381,6 +2478,10 @@ class RemoveNeedleTraining(QWidget):
                         # Ask thread to stop and quit
                         self.camera_thread.is_running = False
                         try:
+                            self.camera_thread.cleanup()
+                        except Exception:
+                            pass
+                        try:
                             self.camera_thread.quit()
                         except Exception:
                             pass
@@ -2393,6 +2494,17 @@ class RemoveNeedleTraining(QWidget):
                                 self.camera_thread.stop()
                             except Exception:
                                 pass
+                            try:
+                                waited = self.camera_thread.wait(2000)
+                            except Exception:
+                                waited = False
+                            if not waited:
+                                print("[RemoveNeedleTraining.cleanup] camera_thread still running, terminating")
+                                try:
+                                    self.camera_thread.terminate()
+                                    self.camera_thread.wait(1000)
+                                except Exception:
+                                    pass
                     except Exception as e:
                         print(f"[RemoveNeedleTraining.cleanup] Error while stopping thread: {e}")
                     print(f"[RemoveNeedleTraining.cleanup] Camera thread stopped")
@@ -2443,6 +2555,15 @@ class RemoveNeedleTraining(QWidget):
             print(f"[RemoveNeedleTraining] Quiz answered correctly! Events completed: {self.phase4_events_completed}/4")
         else:
             print(f"[RemoveNeedleTraining] Quiz answered incorrectly. Events still: {self.phase4_events_completed}/4")
+
+        if self.use_hardware_pull and self.hardware_transport == "udp":
+            last_event = (self.last_event_msg or "").strip().lower()
+            if last_event == "highdamp":
+                self._send_to_mcu("OK")
+            elif last_event == "lowdamp":
+                self._send_to_mcu("OK1")
+            elif last_event == "keep":
+                self._send_to_mcu("OK2")
         
         # 重置拉线状态，使后续拉线灵敏度恢复正常
         self.pull_start_y = None

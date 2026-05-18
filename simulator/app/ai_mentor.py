@@ -7,12 +7,14 @@ import os
 from datetime import datetime
 from typing import Optional, List, Dict
 
+from app.i18n import get_language
+
 
 class AIMentor:
     """AI护理导师 - 处理与GPT API的交互"""
     
     # 系统提示词 - 定义AI的角色和行为
-    SYSTEM_PROMPT = """You are an expert nursing mentor specializing in epidural catheter removal procedures. 
+    BASE_SYSTEM_PROMPT = """You are an expert nursing mentor specializing in epidural catheter removal procedures.
 Your role is to provide educational guidance, answer questions, and help healthcare professionals understand best practices.
 
 Key responsibilities:
@@ -32,8 +34,7 @@ Always:
 - Maintain patient safety as the top priority
 - Use clear, understandable language
 
-    Please answer in English. Always respond in English unless explicitly requested otherwise.
-If asked "Who are you?" reply exactly: "I am an AI nursing mentor."""
+Do not diagnose patients. Keep answers educational and ask the user to consult senior clinical staff when the question implies patient-specific risk."""
     
     def __init__(self, api_url: str, api_key: Optional[str], model: str = "qwen-plus", base_url: Optional[str] = None):
         """
@@ -51,6 +52,20 @@ If asked "Who are you?" reply exactly: "I am an AI nursing mentor."""
         self.api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
         self.model = model
         self.conversation_history: List[Dict] = []
+
+    def _system_prompt(self) -> str:
+        if get_language() == "zh":
+            return (
+                self.BASE_SYSTEM_PROMPT
+                + "\n\n请始终使用简体中文回答，除非用户明确要求其他语言。"
+                + "\n回答要专业、清晰、适合护理训练场景。"
+                + "\n如果用户问“你是谁？”，请回答：“我是AI护理助手。”"
+            )
+        return (
+            self.BASE_SYSTEM_PROMPT
+            + '\n\nPlease answer in English unless explicitly requested otherwise.'
+            + '\nIf asked "Who are you?", reply exactly: "I am an AI nursing mentor."'
+        )
     
     def chat(self, user_message: str, temperature: float = 0.7) -> Optional[str]:
         """
@@ -84,7 +99,7 @@ If asked "Who are you?" reply exactly: "I am an AI nursing mentor."""
 
         completion = client.chat.completions.create(
             model=self.model,
-            messages=[{"role": "system", "content": self.SYSTEM_PROMPT}] + self.conversation_history,
+            messages=[{"role": "system", "content": self._system_prompt()}] + self.conversation_history,
             temperature=temperature,
         )
 

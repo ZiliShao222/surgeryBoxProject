@@ -24,6 +24,55 @@ static bool readIncomingUDP(String &msg) {
     return true;
 }
 
+static bool handleRuntimeControlCommand(const String& msg) {
+    if (msg == "Stop") {
+        motorAbortWindBack();
+        servoBrakeLock();
+        sendUDPMessageToLast("ACK: Stop");
+        return true;
+    }
+    if (msg == "Winding") {
+        motorStartWindBack();
+        sendUDPMessageToLast("ACK: Winding");
+        return true;
+    }
+    if (msg == "MF" || msg == "MotorForward") {
+        motorAbortWindBack();
+        servoBrakeRelease();
+        motorForward();
+        sendUDPMessageToLast("ACK: MotorForward");
+        return true;
+    }
+    if (msg == "MR" || msg == "MotorReverse") {
+        motorAbortWindBack();
+        servoBrakeRelease();
+        motorReverse();
+        sendUDPMessageToLast("ACK: MotorReverse");
+        return true;
+    }
+    if (msg == "MS" || msg == "MotorStop") {
+        motorStop();
+        sendUDPMessageToLast("ACK: MotorStop");
+        return true;
+    }
+    if (msg == "BR" || msg == "BrakeRelease") {
+        servoBrakeRelease();
+        sendUDPMessageToLast("ACK: BrakeRelease");
+        return true;
+    }
+    if (msg == "BL" || msg == "BrakeLock") {
+        servoBrakeLock();
+        sendUDPMessageToLast("ACK: BrakeLock");
+        return true;
+    }
+    if (msg == "BW" || msg == "BrakeWeak") {
+        servoBrakeWeak();
+        sendUDPMessageToLast("ACK: BrakeWeak");
+        return true;
+    }
+    return false;
+}
+
 void initWiFiHotspotUDP(const char* ssid, const char* password, uint16_t listenPort) {
     WiFi.softAP(ssid, password);
     localPort = listenPort;
@@ -63,12 +112,8 @@ void handleUDPMessages() {
     if (msg == "Start") {
         startEventSequence();
         sendUDPMessageToLast("ACK: Start");
-    } else if (msg == "Stop") {
-        servoBrakeLock();
-        sendUDPMessageToLast("ACK: Stop");
-    } else if (msg == "Winding") {
-        motorWindBack();
-        sendUDPMessageToLast("ACK: Winding");
+    } else if (handleRuntimeControlCommand(msg)) {
+        return;
     } else {
         sendUDPMessageToLast("ACK: " + msg);
     }
@@ -92,13 +137,20 @@ void sendSignal(const String& sig) {
     Serial.printf("[WiFi UDP] Signal sent: %s\n", sig.c_str());
 }
 
-void waitForCmd(const String& target) {
+bool waitForCmd(const String& target) {
     while (true) {
         String msg;
         if (readIncomingUDP(msg)) {
             Serial.printf("[WiFi UDP] WaitForCmd got: %s\n", msg.c_str());
-            if (msg == target) return;
+            sendUDPMessageToLast(msg);
+            if (msg == "Winding") {
+                handleRuntimeControlCommand(msg);
+                return true;
+            }
+            if (handleRuntimeControlCommand(msg)) return false;
+            if (msg == target) return true;
         }
+        motorUpdateWindBack();
         imuBridgeLoop();
         delay(10);
     }
@@ -109,10 +161,13 @@ String waitForCmdAny(std::initializer_list<String> targets) {
         String msg;
         if (readIncomingUDP(msg)) {
             Serial.printf("[WiFi UDP] WaitForCmdAny got: %s\n", msg.c_str());
+            sendUDPMessageToLast(msg);
+            if (handleRuntimeControlCommand(msg)) return msg;
             for (auto &t : targets) {
                 if (msg == t) return msg;
             }
         }
+        motorUpdateWindBack();
         imuBridgeLoop();
         delay(10);
     }
@@ -121,6 +176,13 @@ String waitForCmdAny(std::initializer_list<String> targets) {
 void waitShortPull() {
     float startDist = readDistance();
     while (readDistance() < startDist + 0.5) {
+        String msg;
+        if (readIncomingUDP(msg)) {
+            Serial.printf("[WiFi UDP] waitShortPull got: %s\n", msg.c_str());
+            sendUDPMessageToLast(msg);
+            if (handleRuntimeControlCommand(msg)) return;
+        }
+        motorUpdateWindBack();
         imuBridgeLoop();
         delay(10);
     }

@@ -10,6 +10,13 @@ from datetime import datetime
 from pathlib import Path
 
 
+def _training_mode_from_record(record):
+    data = record.get("training_data", {}) if isinstance(record, dict) else {}
+    if not isinstance(data, dict):
+        data = {}
+    return data.get("training_mode") or data.get("training_type") or "unknown"
+
+
 class TrainingRecordManager:
     """训练记录管理器"""
     
@@ -117,6 +124,10 @@ class TrainingRecordManager:
                 "total_trainings": 0,
                 "total_time": 0,
                 "avg_time": 0,
+                "avg_accuracy": 0,
+                "scored_training_count": 0,
+                "training_type_counts": {},
+                "change_dressing_count": 0,
                 "last_training": None,
                 "best_time": None,
                 "details": []
@@ -125,20 +136,42 @@ class TrainingRecordManager:
         # 计算统计数据
         total_trainings = len(records)
         times = []
+        accuracies = []
+        training_type_counts = {}
         
         for record in records:
-            elapsed_time = record.get("training_data", {}).get("elapsed_time", 0)
+            training_data = record.get("training_data", {}) if isinstance(record, dict) else {}
+            if not isinstance(training_data, dict):
+                training_data = {}
+
+            mode = _training_mode_from_record(record)
+            training_type_counts[mode] = training_type_counts.get(mode, 0) + 1
+
+            elapsed_time = training_data.get("elapsed_time", 0)
             if elapsed_time:
                 times.append(elapsed_time)
+
+            if mode != "change_dressing":
+                try:
+                    accuracy = float(training_data.get("accuracy", 0))
+                    if accuracy > 0:
+                        accuracies.append(accuracy)
+                except (TypeError, ValueError):
+                    pass
         
         total_time = sum(times)
         avg_time = total_time / total_trainings if total_trainings > 0 else 0
         best_time = min(times) if times else None
+        avg_accuracy = sum(accuracies) / len(accuracies) if accuracies else 0
         
         return {
             "total_trainings": total_trainings,
             "total_time": total_time,
             "avg_time": avg_time,
+            "avg_accuracy": avg_accuracy,
+            "scored_training_count": len(accuracies),
+            "training_type_counts": training_type_counts,
+            "change_dressing_count": training_type_counts.get("change_dressing", 0),
             "last_training": records[0] if records else None,
             "best_time": best_time,
             "details": records

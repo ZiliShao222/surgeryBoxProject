@@ -27,7 +27,7 @@ void sendUDPMessageToLast(const String& msg);
 void sendSignal(const String& sig);
 
 // 阻塞等待指定指令
-void waitForCmd(const String& target);
+bool waitForCmd(const String& target);
 String waitForCmdAny(std::initializer_list<String> targets);
 
 // 等待短距离拉出（用于 Continue 分支）
