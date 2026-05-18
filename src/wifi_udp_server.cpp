@@ -4,6 +4,64 @@
 #include "events.h"
 #include "encoder.h"
 #include "imu_bridge.h"
+#include "config.h"
+
+static String readDigitalPinsSnapshot() {
+    const uint8_t pins[] = {D0, D1, D2, D3, D4, D5, D6, D7, D8};
+    const char* names[] = {"D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"};
+    String out = "PINS:";
+    for (size_t i = 0; i < sizeof(pins) / sizeof(pins[0]); ++i) {
+        if (i > 0) out += ",";
+        out += names[i];
+        out += "=";
+        out += String(digitalRead(pins[i]));
+    }
+    return out;
+}
+
+static String readEncoderSnapshot() {
+    return "ENC:raw=" + String(readRawTicks()) +
+           ",ticks=" + String(readTicks()) +
+           ",dist_m=" + String(readDistance(), 4) +
+           ",A=" + String(readEncoderPinA()) +
+           ",B=" + String(readEncoderPinB()) +
+           ",edgeA=" + String(readEncoderEdgesA()) +
+           ",edgeB=" + String(readEncoderEdgesB()) +
+           ",seq=" + String(sequenceRunning ? 1 : 0);
+}
+
+static const unsigned long ENCODER_TELEMETRY_INTERVAL_MS = 200;
+static unsigned long lastTelemetrySendMs = 0;
+static unsigned long lastTelemetrySampleMs = 0;
+static float lastTelemetryDistanceM = 0.0f;
+
+void resetEncoderTelemetryClock() {
+    unsigned long now = millis();
+    lastTelemetrySendMs = 0;
+    lastTelemetrySampleMs = now;
+    lastTelemetryDistanceM = readDistance();
+}
+
+void sendEncoderTelemetry(bool force) {
+    if (!sequenceRunning) return;
+
+    unsigned long now = millis();
+    if (!force && lastTelemetrySendMs != 0 &&
+        now - lastTelemetrySendMs < ENCODER_TELEMETRY_INTERVAL_MS) {
+        return;
+    }
+
+    float dist = readDistance();
+    float dt = lastTelemetrySampleMs ? (now - lastTelemetrySampleMs) / 1000.0f : 0.0f;
+    float speed = dt > 0.0f ? (dist - lastTelemetryDistanceM) / dt : 0.0f;
+
+    lastTelemetrySampleMs = now;
+    lastTelemetryDistanceM = dist;
+    lastTelemetrySendMs = now;
+
+    sendUDPMessageToLast("POS:" + String(dist * 100.0f, 2));
+    sendUDPMessageToLast("SPEED:" + String(speed * 100.0f, 2));
+}
 
 WiFiUDP Udp;
 uint16_t localPort;
@@ -11,6 +69,7 @@ IPAddress lastRemoteIp;
 uint16_t lastRemotePort;
 char packetBuffer[255];
 ESP8266WebServer httpServer(80);
+static String serialCommandBuffer = "";
 
 static bool readIncomingUDP(String &msg) {
     int packetSize = Udp.parsePacket();
@@ -22,6 +81,33 @@ static bool readIncomingUDP(String &msg) {
     msg = String(packetBuffer);
     msg.trim();
     return true;
+}
+
+static bool readIncomingSerial(String &msg) {
+    while (Serial.available()) {
+        char c = static_cast<char>(Serial.read());
+        if (c == '\n' || c == '\r') {
+            serialCommandBuffer.trim();
+            if (serialCommandBuffer.length() > 0) {
+                msg = serialCommandBuffer;
+                serialCommandBuffer = "";
+                return true;
+            }
+            serialCommandBuffer = "";
+        } else if (isPrintable(c)) {
+            serialCommandBuffer += c;
+            if (serialCommandBuffer.length() > 120) {
+                serialCommandBuffer = "";
+            }
+        }
+    }
+    return false;
+}
+
+static bool readIncomingCommand(String &msg) {
+    if (readIncomingUDP(msg)) return true;
+    if (readIncomingSerial(msg)) return true;
+    return false;
 }
 
 static bool handleRuntimeControlCommand(const String& msg) {
@@ -70,6 +156,20 @@ static bool handleRuntimeControlCommand(const String& msg) {
         sendUDPMessageToLast("ACK: BrakeWeak");
         return true;
     }
+    if (msg == "ENC" || msg == "ENC?") {
+        sendUDPMessageToLast(readEncoderSnapshot());
+        return true;
+    }
+    if (msg == "ZERO" || msg == "RSTENC" || msg == "RESET_ENC") {
+        resetEncoderDiagnostics();
+        sendUDPMessageToLast("ACK: ZERO");
+        sendUDPMessageToLast(readEncoderSnapshot());
+        return true;
+    }
+    if (msg == "PINS" || msg == "PINS?") {
+        sendUDPMessageToLast(readDigitalPinsSnapshot());
+        return true;
+    }
     return false;
 }
 
@@ -106,8 +206,25 @@ void handleUDPMessages() {
                   lastRemotePort,
                   msg.c_str());
 
-    // Echo back for monitoring
-    sendUDPMessageToLast(msg);
+    handleHardwareCommand(msg, true);
+}
+
+void handleSerialHardwareCommands() {
+    String msg;
+    while (readIncomingSerial(msg)) {
+        Serial.printf("[Serial CMD] Received: %s\n", msg.c_str());
+        handleHardwareCommand(msg, true);
+    }
+}
+
+void handleHardwareCommand(const String& rawMsg, bool echo) {
+    String msg = rawMsg;
+    msg.trim();
+    if (msg.length() == 0) return;
+
+    if (echo) {
+        sendUDPMessageToLast(msg);
+    }
 
     if (msg == "Start") {
         startEventSequence();
@@ -127,6 +244,7 @@ void sendUDPMessage(const IPAddress& ip, uint16_t port, const String& msg) {
 }
 
 void sendUDPMessageToLast(const String& msg) {
+    Serial.println(msg);
     if (lastRemoteIp) {
         sendUDPMessage(lastRemoteIp, lastRemotePort, msg);
     }
@@ -140,7 +258,7 @@ void sendSignal(const String& sig) {
 bool waitForCmd(const String& target) {
     while (true) {
         String msg;
-        if (readIncomingUDP(msg)) {
+        if (readIncomingCommand(msg)) {
             Serial.printf("[WiFi UDP] WaitForCmd got: %s\n", msg.c_str());
             sendUDPMessageToLast(msg);
             if (msg == "Winding") {
@@ -152,6 +270,7 @@ bool waitForCmd(const String& target) {
         }
         motorUpdateWindBack();
         imuBridgeLoop();
+        sendEncoderTelemetry(false);
         delay(10);
     }
 }
@@ -159,7 +278,7 @@ bool waitForCmd(const String& target) {
 String waitForCmdAny(std::initializer_list<String> targets) {
     while (true) {
         String msg;
-        if (readIncomingUDP(msg)) {
+        if (readIncomingCommand(msg)) {
             Serial.printf("[WiFi UDP] WaitForCmdAny got: %s\n", msg.c_str());
             sendUDPMessageToLast(msg);
             if (handleRuntimeControlCommand(msg)) return msg;
@@ -169,6 +288,7 @@ String waitForCmdAny(std::initializer_list<String> targets) {
         }
         motorUpdateWindBack();
         imuBridgeLoop();
+        sendEncoderTelemetry(false);
         delay(10);
     }
 }
@@ -177,13 +297,14 @@ void waitShortPull() {
     float startDist = readDistance();
     while (readDistance() < startDist + 0.5) {
         String msg;
-        if (readIncomingUDP(msg)) {
+        if (readIncomingCommand(msg)) {
             Serial.printf("[WiFi UDP] waitShortPull got: %s\n", msg.c_str());
             sendUDPMessageToLast(msg);
             if (handleRuntimeControlCommand(msg)) return;
         }
         motorUpdateWindBack();
         imuBridgeLoop();
+        sendEncoderTelemetry(false);
         delay(10);
     }
 }

@@ -15,7 +15,15 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame, QPushButton
 from PySide6.QtGui import QFont, QPixmap, QImage, QPainter, QColor, QBrush
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
-from app.camera_manager import CameraThread
+try:
+    from app.hardware.serial_connector import SerialHardwareListener
+except Exception as exc:
+    SerialHardwareListener = None
+    SERIAL_IMPORT_ERROR = exc
+else:
+    SERIAL_IMPORT_ERROR = None
+
+from app.camera_manager import CameraThread, get_configured_camera_index
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.training_records import get_training_record_manager
 
@@ -455,10 +463,15 @@ class RemoveNeedleTraining(QWidget):
         self.setObjectName("RemoveNeedleTraining")
         self._cleanup_done = False
         self.training_mode = training_mode  # "remove_needle_simulator" or "remove_needle_no_simulator"
-        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
-        if self.hardware_transport not in ("udp", "off"):
-            self.hardware_transport = "udp"
+        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
+        if self.hardware_transport not in ("serial", "udp", "off"):
+            self.hardware_transport = "serial"
         self.use_hardware_pull = os.getenv("SURGERYBOX_USE_HARDWARE_PULL", "1").strip().lower() not in ("0", "false", "no", "off")
+        self.serial_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6").strip() or "COM6"
+        try:
+            self.serial_baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
+        except ValueError:
+            self.serial_baudrate = 115200
         self.board_ip = os.getenv("SURGERYBOX_BOARD_IP", "192.168.4.1").strip() or "192.168.4.1"
         try:
             self.board_port = int(os.getenv("SURGERYBOX_BOARD_PORT", "4210"))
@@ -469,6 +482,7 @@ class RemoveNeedleTraining(QWidget):
         except ValueError:
             self.local_udp_port = 4211
         self.external_thread = None
+        self.serial_thread = None
         self.external_pos_cm = 0.0
         self.external_speed_cmps = 0.0
         self.seq_info = ""
@@ -477,6 +491,10 @@ class RemoveNeedleTraining(QWidget):
         self._last_position_message_time = 0.0
         self._last_phase4_status_log_time = 0.0
         self._last_phase4_progress_log_time = 0.0
+        self._hardware_start_confirmed = False
+        self._hardware_start_retry_active = False
+        self._hardware_start_retry_count = 0
+        self._hardware_start_retry_limit = 12
         
         # 初始化组件
         print(f"[RemoveNeedleTraining] Setting up UI")
@@ -607,8 +625,9 @@ class RemoveNeedleTraining(QWidget):
     def _setup_camera(self):
         """设置摄像头"""
         try:
-            print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread")
-            self.camera_thread = CameraThread(camera_index=0)
+            camera_index = get_configured_camera_index(0)
+            print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread index={camera_index}")
+            self.camera_thread = CameraThread(camera_index=camera_index)
             print(f"[RemoveNeedleTraining._setup_camera] Connecting frame_ready signal")
             self.camera_thread.frame_ready.connect(self._on_frame_ready)
             if hasattr(self.camera_thread, "error"):
@@ -1788,15 +1807,58 @@ class RemoveNeedleTraining(QWidget):
         self._last_position_message_time = 0.0
         self._last_phase4_status_log_time = 0.0
         self._last_phase4_progress_log_time = 0.0
+        self._hardware_start_confirmed = False
+        self._hardware_start_retry_active = False
+        self._hardware_start_retry_count = 0
         
         # 显示Phase 4指导文字
         guide_text = "Pull out the epidural catheter smoothly and steadily."
         self.text_display.set_text(guide_text)
         self.text_display.fade_in(duration_ms=500)
-        if self.use_hardware_pull and self.hardware_transport == "udp":
-            self._start_external_listener()
+        if self.use_hardware_pull and self.hardware_transport in ("serial", "udp"):
+            self._start_hardware_listener()
             self._update_info_overlay()
             QTimer.singleShot(1000, lambda: self._send_start_when_ready())
+
+    def _start_hardware_listener(self):
+        """Start the selected hardware transport for Phase 4."""
+        if self.hardware_transport == "serial":
+            self._start_serial_listener()
+            return
+        self._start_external_listener()
+
+    def _start_serial_listener(self):
+        """Start USB serial telemetry for the wired training station."""
+        if self.serial_thread:
+            return
+        if SerialHardwareListener is None:
+            message = f"Serial connector unavailable: {SERIAL_IMPORT_ERROR}"
+            self.last_event_msg = message
+            print(f"[Serial] {message}")
+            self._update_info_overlay()
+            return
+        try:
+            self.serial_thread = SerialHardwareListener(self.serial_port, self.serial_baudrate)
+            self.serial_thread.message_received.connect(self._on_serial_message)
+            self.serial_thread.connection_changed.connect(self._on_serial_connection_changed)
+            self.serial_thread.start()
+            print(f"[Serial] Listener starting on {self.serial_port} @ {self.serial_baudrate}")
+        except Exception as exc:
+            self.serial_thread = None
+            self.last_event_msg = f"Serial listener failed: {exc}"
+            print(f"[Serial] Failed to start serial listener: {exc}")
+            self._update_info_overlay()
+
+    def _on_serial_connection_changed(self, connected: bool, message: str):
+        state = "connected" if connected else "disconnected"
+        print(f"[Serial] {state}: {message}")
+        if not connected and message and message != "Serial disconnected":
+            self.last_event_msg = message
+            self._update_info_overlay()
+
+    def _on_serial_message(self, msg: str):
+        print(f"[Serial] Received: {msg}")
+        self._on_external_message(msg)
 
     def _start_external_listener(self):
         """Start UDP telemetry for camera + hardware training."""
@@ -1815,10 +1877,14 @@ class RemoveNeedleTraining(QWidget):
             self._update_info_overlay()
 
     def _hardware_ready(self):
+        if self.hardware_transport == "serial":
+            return bool(self.serial_thread and getattr(self.serial_thread, "ready", False))
         return bool(self.external_thread and getattr(self.external_thread, "ready", False))
 
     def _hardware_last_error(self):
         try:
+            if self.hardware_transport == "serial" and self.serial_thread:
+                return getattr(self.serial_thread, "last_error", "")
             if self.external_thread:
                 return getattr(self.external_thread, "last_error", "")
         except Exception:
@@ -1829,7 +1895,14 @@ class RemoveNeedleTraining(QWidget):
         """Send Start after the listener socket is bound, so MCU replies to PC port 4211."""
         try:
             if self._hardware_ready():
-                self._send_to_mcu("Start")
+                self._hardware_start_retry_count += 1
+                print(
+                    f"[Hardware] {self.hardware_transport} start attempt "
+                    f"{self._hardware_start_retry_count}/{self._hardware_start_retry_limit}"
+                )
+                self._send_hardware_message("HELLO_PC")
+                self._send_hardware_message("Start")
+                self._queue_hardware_start_retry()
                 return
         except Exception:
             pass
@@ -1838,6 +1911,45 @@ class RemoveNeedleTraining(QWidget):
             print(f"[Hardware] UDP listener not ready, Start not sent. {err}".strip())
             return
         QTimer.singleShot(100, lambda: self._send_start_when_ready(retries - 1))
+
+    def _queue_hardware_start_retry(self, delay_ms: int = 1500):
+        """Retry Start if the MCU has not confirmed a sequence yet."""
+        if self._hardware_start_retry_active:
+            return
+        self._hardware_start_retry_active = True
+        QTimer.singleShot(delay_ms, self._retry_hardware_start_if_needed)
+
+    def _retry_hardware_start_if_needed(self):
+        self._hardware_start_retry_active = False
+
+        if not (self.use_hardware_pull and self.hardware_transport in ("serial", "udp")):
+            return
+        if self.current_phase != 3:
+            return
+        if self._hardware_start_confirmed or self.seq_info:
+            return
+        if self._hardware_start_retry_count >= self._hardware_start_retry_limit:
+            err = self._hardware_last_error()
+            hint = f" Last listener error: {err}" if err else ""
+            print(
+                "[Hardware] No telemetry after repeated Start attempts. "
+                "Check the USB serial cable/COM port or switch back to UDP if needed."
+                f"{hint}"
+            )
+            return
+
+        print("[Hardware] Still waiting for MCU telemetry; retrying HELLO_PC + Start")
+        self._send_start_when_ready()
+
+    def _send_hardware_message(self, msg: str):
+        """Send a command through the active hardware transport."""
+        if self.hardware_transport == "serial":
+            if self.serial_thread and self.serial_thread.send_message(msg):
+                print(f"[Serial->MCU] Sent: {msg}")
+                return True
+            print(f"[Serial->MCU] Send skipped; serial not ready: {msg}")
+            return False
+        return self._send_to_mcu(msg)
 
     def _send_to_mcu(self, msg: str):
         """Send one UDP command to the MCU, preferring the listener socket."""
@@ -1861,8 +1973,14 @@ class RemoveNeedleTraining(QWidget):
         m = msg.lower().strip()
 
         if m.startswith("seq:"):
+            self._hardware_start_confirmed = True
             self.seq_info = msg.split(":", 1)[1].strip()
             self._apply_hardware_sequence(self.seq_info)
+            self._update_info_overlay()
+            return
+
+        if m == "start" or m == "ack: start":
+            self._hardware_start_confirmed = True
             self._update_info_overlay()
             return
 
@@ -1952,7 +2070,7 @@ class RemoveNeedleTraining(QWidget):
             return
         if not hasattr(self, "_hardware_events_seen"):
             self._hardware_events_seen = set()
-        key = f"{event_name}:{question_id}:{len(self.events_results)}"
+        key = event_name
         if key in self._hardware_events_seen:
             return
         self._hardware_events_seen.add(key)
@@ -1967,7 +2085,7 @@ class RemoveNeedleTraining(QWidget):
         try:
             if not hasattr(self, "info_overlay") or not self.info_overlay:
                 return
-            if not (self.use_hardware_pull and self.hardware_transport == "udp" and self.current_phase == 3):
+            if not (self.use_hardware_pull and self.hardware_transport in ("serial", "udp") and self.current_phase == 3):
                 self.info_overlay.setVisible(False)
                 return
             seq_line = f"Seq: {self.seq_info}" if self.seq_info else "Seq: waiting"
@@ -2002,23 +2120,46 @@ class RemoveNeedleTraining(QWidget):
         self._last_position_message_time = now
 
         self.external_pos_cm = max(0.0, distance_cm)
-        self.needle_pulled_distance_cm = max(0.0, min(self.external_pos_cm, self.needle_full_length_cm))
-        self.needle_pulled_distance = (self.needle_pulled_distance_cm / self.needle_full_length_cm) * self.needle_full_length
+        # Keep the real hardware distance for scoring/logging. The drawn catheter
+        # line is scaled separately because MCU sequences can exceed the old 20 cm UI length.
+        self.needle_pulled_distance_cm = self.external_pos_cm
+        self.needle_pulled_distance = self._phase4_distance_to_pixels(self.needle_pulled_distance_cm)
         self.max_pulled_distance_cm = max(self.max_pulled_distance_cm, self.needle_pulled_distance_cm)
         self.max_pulled_distance = max(self.max_pulled_distance, self.needle_pulled_distance)
+
+    def _phase4_target_distance_cm(self) -> float:
+        """Return the real-world distance that should map to the full on-screen line."""
+        target = float(getattr(self, "needle_full_length_cm", 20.0) or 20.0)
+        try:
+            events_queue = self.pull_config.get("events_queue", None) if isinstance(self.pull_config, dict) else None
+            if events_queue:
+                target = max(target, max(float(dist) for dist, _ in events_queue))
+        except Exception:
+            pass
+        return max(1.0, target)
+
+    def _phase4_distance_to_pixels(self, distance_cm: float) -> float:
+        """Scale real hardware centimeters into the fixed AR catheter line length."""
+        target_cm = self._phase4_target_distance_cm()
+        safe_cm = max(0.0, min(float(distance_cm), target_cm))
+        return (safe_cm / target_cm) * self.needle_full_length
+
+    def _hardware_events_drive_quiz(self) -> bool:
+        """When an MCU sequence is active, quiz timing should follow MCU event packets."""
+        return bool(self.use_hardware_pull and self.hardware_transport in ("serial", "udp") and self.seq_info)
 
     def _hardware_pull_active(self):
         """Return True shortly after MCU telemetry arrives, making hardware authoritative."""
         return (
             self.use_hardware_pull
-            and self.hardware_transport == "udp"
+            and self.hardware_transport in ("serial", "udp")
             and self.current_phase == 3
             and self.last_hardware_message_time > 0
             and time.time() - self.last_hardware_message_time < 2.0
         )
 
     def _phase4_hardware_status_text(self):
-        if not (self.use_hardware_pull and self.hardware_transport == "udp"):
+        if not (self.use_hardware_pull and self.hardware_transport in ("serial", "udp")):
             return "HW: off"
         if self.last_hardware_message_time <= 0:
             return "HW: waiting telemetry"
@@ -2126,11 +2267,14 @@ class RemoveNeedleTraining(QWidget):
             cv2.circle(frame, (self.needle_x, yellow_point_y), 10, (0, 255, 255), -1)
             
             # 显示当前拉出的厘米数
-            pull_text = f"Pull: {self.needle_pulled_distance_cm:.1f} cm / {self.needle_full_length_cm} cm"
+            pull_text = f"Pull: {self.needle_pulled_distance_cm:.1f} cm / {self._phase4_target_distance_cm():.1f} cm"
             cv2.putText(frame, pull_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
             
             # 即使暂停也要检查是否已经完全拉出（resume后马上完成）
-            if self.phase4_events_completed == 4 and self.max_pulled_distance >= self.needle_full_length:
+            if (
+                self.phase4_events_completed >= 4
+                and self.max_pulled_distance_cm >= self._phase4_target_distance_cm()
+            ):
                 print(f"[Phase 4] Detected completion while paused - completing NOW!")
                 self._phase_4_complete()
             
@@ -2162,7 +2306,7 @@ class RemoveNeedleTraining(QWidget):
         cv2.circle(frame, (self.needle_x, yellow_point_y), 10, point_color, -1)
         
         # 显示拉出的厘米数
-        pull_text = f"Pull: {self.needle_pulled_distance_cm:.1f} cm / {self.needle_full_length_cm} cm"
+        pull_text = f"Pull: {self.needle_pulled_distance_cm:.1f} cm / {self._phase4_target_distance_cm():.1f} cm"
         cv2.putText(frame, pull_text, (20, 40),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
         self._draw_phase4_status(frame)
@@ -2192,11 +2336,11 @@ class RemoveNeedleTraining(QWidget):
             next_idx = int(self.phase4_events_completed)
             if next_idx < len(events_queue):
                 dist_cm, evt_type = events_queue[next_idx]
-                threshold_px = (dist_cm / self.needle_full_length_cm) * self.needle_full_length
+                threshold_px = self._phase4_distance_to_pixels(dist_cm)
                 if current_time - getattr(self, "_last_phase4_progress_log_time", 0.0) > 0.75:
                     print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Next event: {evt_type}@{dist_cm:.1f}cm (px {threshold_px:.0f}), Progress: {self.phase4_events_completed}/{len(events_queue)}")
                     self._last_phase4_progress_log_time = current_time
-                if self.max_pulled_distance >= threshold_px:
+                if (not self._hardware_events_drive_quiz()) and self.max_pulled_distance_cm >= dist_cm:
                     # 触发对应事件
                     if evt_type == 'Q3':
                         print(f"[Phase 4] Triggering Q3 at {self.max_pulled_distance_cm:.1f}cm")
@@ -2218,26 +2362,28 @@ class RemoveNeedleTraining(QWidget):
                 low_damp_len = self.pull_config['low_damping_distance']
 
                 # 将配置长度（厘米）转换到像素长度（直接转换，不累加）
-                q3_first_threshold = (scream_len_1 / self.needle_full_length_cm) * self.needle_full_length
-                q3_second_threshold = (scream_len_2 / self.needle_full_length_cm) * self.needle_full_length
-                q4_threshold = (high_damp_len / self.needle_full_length_cm) * self.needle_full_length
-                q5_threshold = (low_damp_len / self.needle_full_length_cm) * self.needle_full_length
+                q3_first_threshold = self._phase4_distance_to_pixels(scream_len_1)
+                q3_second_threshold = self._phase4_distance_to_pixels(scream_len_2)
+                q4_threshold = self._phase4_distance_to_pixels(high_damp_len)
+                q5_threshold = self._phase4_distance_to_pixels(low_damp_len)
 
                 # 调试输出
                 if current_time - getattr(self, "_last_phase4_progress_log_time", 0.0) > 0.75:
                     print(f"[Phase 4] Pulled: {self.needle_pulled_distance_cm:.1f}cm, Events: {self.phase4_events_completed}/4, Thresholds(px): Q3_1={q3_first_threshold:.0f}, Q3_2={q3_second_threshold:.0f}, Q4={q4_threshold:.0f}, Q5={q5_threshold:.0f}")
                     self._last_phase4_progress_log_time = current_time
 
-                if self.phase4_events_completed == 0 and self.max_pulled_distance >= q3_first_threshold:
+                if self._hardware_events_drive_quiz():
+                    pass
+                elif self.phase4_events_completed == 0 and self.max_pulled_distance_cm >= scream_len_1:
                     print(f"[Phase 4] Event 1/4: First scream at {self.max_pulled_distance_cm:.1f}cm - triggering Q3")
                     self._trigger_quiz_q3()
-                elif self.phase4_events_completed == 1 and self.max_pulled_distance >= q3_second_threshold:
+                elif self.phase4_events_completed == 1 and self.max_pulled_distance_cm >= scream_len_2:
                     print(f"[Phase 4] Event 2/4: Second scream at {self.max_pulled_distance_cm:.1f}cm - triggering Q3")
                     self._trigger_quiz_q3()
-                elif self.phase4_events_completed == 2 and self.max_pulled_distance >= q4_threshold:
+                elif self.phase4_events_completed == 2 and self.max_pulled_distance_cm >= high_damp_len:
                     print(f"[Phase 4] Event 3/4: High resistance at {self.max_pulled_distance_cm:.1f}cm - triggering Q4")
                     self._trigger_quiz_q4()
-                elif self.phase4_events_completed == 3 and self.max_pulled_distance >= q5_threshold:
+                elif self.phase4_events_completed == 3 and self.max_pulled_distance_cm >= low_damp_len:
                     print(f"[Phase 4] Event 4/4: Low resistance at {self.max_pulled_distance_cm:.1f}cm - triggering Q5")
                     self._trigger_quiz_q5()
             except Exception:
@@ -2245,7 +2391,10 @@ class RemoveNeedleTraining(QWidget):
                 print("[Phase 4] No valid pull_config found for event triggers")
 
         # 完成检查：如果已经完成所有事件并且拉到末端则完成训练
-        if self.phase4_events_completed >= 4 and self.max_pulled_distance >= self.needle_full_length:
+        if (
+            self.phase4_events_completed >= 4
+            and self.max_pulled_distance_cm >= self._phase4_target_distance_cm()
+        ):
             print(f"[Phase 4] All events completed or counter>=4, needle fully extracted ({self.max_pulled_distance_cm:.1f}cm) - training complete NOW!!!")
             self._phase_4_complete()
         
@@ -2436,6 +2585,20 @@ class RemoveNeedleTraining(QWidget):
                     self.external_thread = None
             except Exception:
                 pass
+            try:
+                if self.serial_thread:
+                    print("[Serial] Stopping serial listener")
+                    try:
+                        self.serial_thread.stop()
+                    except Exception:
+                        self.serial_thread.stop_flag = True
+                    try:
+                        self.serial_thread.wait(1000)
+                    except Exception:
+                        pass
+                    self.serial_thread = None
+            except Exception:
+                pass
             
             # 停止阶段计时器
             if self.phase_timer:
@@ -2550,20 +2713,31 @@ class RemoveNeedleTraining(QWidget):
         self.quiz_paused = False
         
         # 只有正确回答quiz才增加事件计数
-        if quiz_correct:
-            self.phase4_events_completed += 1
-            print(f"[RemoveNeedleTraining] Quiz answered correctly! Events completed: {self.phase4_events_completed}/4")
-        else:
-            print(f"[RemoveNeedleTraining] Quiz answered incorrectly. Events still: {self.phase4_events_completed}/4")
+        expected_events = 4
+        try:
+            events_queue = self.pull_config.get("events_queue", None) if isinstance(self.pull_config, dict) else None
+            if events_queue:
+                expected_events = len(events_queue)
+        except Exception:
+            pass
 
-        if self.use_hardware_pull and self.hardware_transport == "udp":
+        if self.phase4_events_completed < expected_events:
+            self.phase4_events_completed += 1
+        result_text = "correctly" if quiz_correct else "incorrectly"
+        print(
+            f"[RemoveNeedleTraining] Quiz answered {result_text}. "
+            f"Events completed: {self.phase4_events_completed}/{expected_events}"
+        )
+
+        if self.use_hardware_pull and self.hardware_transport in ("serial", "udp"):
             last_event = (self.last_event_msg or "").strip().lower()
-            if last_event == "highdamp":
-                self._send_to_mcu("OK")
-            elif last_event == "lowdamp":
-                self._send_to_mcu("OK1")
+            if last_event == "lowdamp":
+                continue_cmd = "OK1"
             elif last_event == "keep":
-                self._send_to_mcu("OK2")
+                continue_cmd = "OK2"
+            else:
+                continue_cmd = "OK"
+            self._send_hardware_message(continue_cmd)
         
         # 重置拉线状态，使后续拉线灵敏度恢复正常
         self.pull_start_y = None

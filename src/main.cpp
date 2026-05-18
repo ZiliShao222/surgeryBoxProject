@@ -20,10 +20,14 @@ void setup() {
     motorInit();            // Motor
     eventsInit();           // Random distance arrays
     signalTesterInit();     // Serial-to-UDP passthrough
-    imuBridgeInit();        // IMU transparent bridge: sensor -> ESP8266 -> COM3
+    // COM6 is now the primary training-control link. Keep the IMU transparent
+    // bridge off here so raw sensor bytes do not corrupt POS/SPEED/Start/OK.
+    // imuBridgeInit();     // IMU transparent bridge: sensor -> ESP8266 -> COM3
 }
 
 void loop() {
+    handleSerialHardwareCommands();
+
     //handleWiFiCommands();   // Legacy TCP handler
     handleUDPMessages();
     handleHttpServer();
@@ -46,17 +50,10 @@ void loop() {
             lastDist = dist;
             Serial.printf("[Encoder] ticks=%ld distance=%.3f m speed=%.3f m/s\n",
                           ticks, dist, speed);
-
-            // Send real-time position/speed only after Start triggers a sequence
-            if (sequenceRunning) {
-                float posCm = dist * 100.0f;
-                float speedCmps = speed * 100.0f;
-                sendUDPMessageToLast("POS:" + String(posCm, 2));
-                sendUDPMessageToLast("SPEED:" + String(speedCmps, 2));
-            }
         }
     }
+    sendEncoderTelemetry(false);
 
     signalTesterLoop();
-    imuBridgeLoop();
+    // imuBridgeLoop();
 }

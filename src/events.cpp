@@ -39,6 +39,7 @@ void startEventSequence() {
         eventTriggered[i] = false;
     }
     sequenceRunning = true;
+    resetEncoderTelemetryClock();
     Serial.printf("[EVENT] Sequence started: Array #%d -> Pain=%.2f, Pain2=%.2f, HighDamp=%.2f, LowDamp=%.2f\n",
                   idx, currentArray[0], currentArray[1], currentArray[2], currentArray[3]);
     // 将选中的序列发送给上位机
@@ -48,6 +49,7 @@ void startEventSequence() {
                     String(currentArray[2] * 100.0f, 2) + "," +
                     String(currentArray[3] * 100.0f, 2);
     sendUDPMessageToLast(seqMsg);
+    sendEncoderTelemetry(true);
 }
 
 void runTestFlow() {

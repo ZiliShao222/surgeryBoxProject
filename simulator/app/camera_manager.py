@@ -4,6 +4,8 @@ Handles camera detection, selection, and preview
 """
 
 import os
+import json
+from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QRect
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
@@ -15,6 +17,106 @@ from PySide6.QtMultimediaWidgets import QVideoWidget
 
 import cv2
 import numpy as np
+
+
+_SETTINGS_PATH = Path(__file__).resolve().parents[1] / "user_settings.json"
+
+
+def _load_settings():
+    try:
+        if _SETTINGS_PATH.exists():
+            with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                return loaded if isinstance(loaded, dict) else {}
+    except Exception as exc:
+        print(f"[CameraSettings] Failed to load settings: {exc}")
+    return {}
+
+
+def _save_settings(settings):
+    try:
+        _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4, ensure_ascii=False)
+    except Exception as exc:
+        print(f"[CameraSettings] Failed to save settings: {exc}")
+
+
+def _parse_int(value, fallback):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def get_configured_camera_index(default=0):
+    """Return the camera index selected in settings or overridden by env."""
+    env_value = os.getenv("SURGERYBOX_CAMERA_INDEX")
+    if env_value not in (None, ""):
+        return _parse_int(env_value, default)
+    settings = _load_settings()
+    return _parse_int(settings.get("camera_index"), default)
+
+
+def save_configured_camera_index(camera_index):
+    settings = _load_settings()
+    settings["camera_index"] = int(camera_index)
+    _save_settings(settings)
+
+
+def get_opencv_camera_backend():
+    """Choose an OpenCV backend. DirectShow is usually best for USB cameras on Windows."""
+    backend_name = os.getenv("SURGERYBOX_CAMERA_BACKEND", "dshow").strip().lower()
+    if backend_name in ("default", "auto", ""):
+        return 0, "default"
+    mapping = {
+        "dshow": getattr(cv2, "CAP_DSHOW", 0),
+        "msmf": getattr(cv2, "CAP_MSMF", 0),
+        "any": getattr(cv2, "CAP_ANY", 0),
+    }
+    return mapping.get(backend_name, getattr(cv2, "CAP_DSHOW", 0)), backend_name
+
+
+def open_camera_capture(camera_index):
+    backend, backend_name = get_opencv_camera_backend()
+    if backend:
+        cap = cv2.VideoCapture(int(camera_index), backend)
+    else:
+        cap = cv2.VideoCapture(int(camera_index))
+    if cap.isOpened():
+        print(f"[Camera] Opened camera {camera_index} using backend={backend_name}")
+        return cap
+
+    # Fallback to OpenCV default in case a vendor driver dislikes DirectShow.
+    try:
+        cap.release()
+    except Exception:
+        pass
+    fallback = cv2.VideoCapture(int(camera_index))
+    if fallback.isOpened():
+        print(f"[Camera] Opened camera {camera_index} using OpenCV default backend")
+    return fallback
+
+
+def configure_camera_capture(cap):
+    """Apply low-latency UVC-friendly defaults without failing if a property is unsupported."""
+    width = _parse_int(os.getenv("SURGERYBOX_CAMERA_WIDTH"), 640)
+    height = _parse_int(os.getenv("SURGERYBOX_CAMERA_HEIGHT"), 480)
+    fps = _parse_int(os.getenv("SURGERYBOX_CAMERA_FPS"), 60)
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    except Exception:
+        pass
+    for prop, value in (
+        (cv2.CAP_PROP_FRAME_WIDTH, width),
+        (cv2.CAP_PROP_FRAME_HEIGHT, height),
+        (cv2.CAP_PROP_FPS, fps),
+        (cv2.CAP_PROP_BUFFERSIZE, 1),
+    ):
+        try:
+            cap.set(prop, value)
+        except Exception:
+            pass
 
 
 class CameraThread(QThread):
@@ -31,17 +133,12 @@ class CameraThread(QThread):
     def run(self):
         """Capture frames from camera"""
         try:
-            self.cap = cv2.VideoCapture(self.camera_index)
+            self.cap = open_camera_capture(self.camera_index)
             if not self.cap.isOpened():
                 self.error.emit(f"Could not open camera index {self.camera_index}. Check camera connection or close other apps using it.")
                 return
             
-            try:
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self.cap.set(cv2.CAP_PROP_FPS, 60)  # 设置帧率为60fps
-            except Exception:
-                pass
+            configure_camera_capture(self.cap)
             
             while self.is_running:
                 try:
@@ -109,7 +206,7 @@ class CameraManager(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_camera_index = 0
+        self.current_camera_index = get_configured_camera_index(0)
         self.camera_thread = None
         self.available_cameras = self._detect_cameras()
         
@@ -119,10 +216,12 @@ class CameraManager(QWidget):
         """Detect available cameras on the system"""
         available_cameras = []
         for i in range(10):  # Check first 10 indices
-            cap = cv2.VideoCapture(i)
+            cap = open_camera_capture(i)
             if cap.isOpened():
                 available_cameras.append(i)
                 cap.release()
+        if self.current_camera_index not in available_cameras:
+            available_cameras.append(self.current_camera_index)
         return available_cameras
     
     def _build_ui(self):
@@ -179,6 +278,8 @@ class CameraManager(QWidget):
         # Populate camera list
         for cam_idx in self.available_cameras:
             self.combo_cameras.addItem(f"Camera {cam_idx}", cam_idx)
+            if cam_idx == self.current_camera_index:
+                self.combo_cameras.setCurrentIndex(self.combo_cameras.count() - 1)
         
         self.combo_cameras.currentIndexChanged.connect(self._on_camera_selected)
         selection_l.addWidget(self.combo_cameras)
@@ -206,6 +307,11 @@ class CameraManager(QWidget):
         """)
         btn_confirm.clicked.connect(self._confirm_camera)
         selection_l.addWidget(btn_confirm)
+
+        btn_refresh = QPushButton("Refresh")
+        btn_refresh.setStyleSheet(btn_confirm.styleSheet())
+        btn_refresh.clicked.connect(self._refresh_cameras)
+        selection_l.addWidget(btn_refresh)
         
         selection_l.addStretch()
         root.addWidget(selection_frame)
@@ -315,6 +421,8 @@ class CameraManager(QWidget):
     def _confirm_camera(self):
         """Confirm camera selection"""
         self.lbl_camera_name.setText(f"Camera {self.current_camera_index}")
+        save_configured_camera_index(self.current_camera_index)
+        print(f"[CameraSettings] Saved camera index: {self.current_camera_index}")
         self.camera_changed.emit(self.current_camera_index)
         # Stop preview if running
         if self.camera_thread and self.camera_thread.isRunning():
@@ -400,6 +508,24 @@ class CameraManager(QWidget):
     def get_current_camera(self):
         """Get currently selected camera index"""
         return self.current_camera_index
+
+    def _refresh_cameras(self):
+        """Refresh camera list after plugging in a USB/Type-C camera."""
+        previous = self.current_camera_index
+        self.available_cameras = self._detect_cameras()
+        self.combo_cameras.blockSignals(True)
+        self.combo_cameras.clear()
+        selected_combo_index = 0
+        for cam_idx in self.available_cameras:
+            self.combo_cameras.addItem(f"Camera {cam_idx}", cam_idx)
+            if cam_idx == previous:
+                selected_combo_index = self.combo_cameras.count() - 1
+        self.combo_cameras.setCurrentIndex(selected_combo_index)
+        selected = self.combo_cameras.itemData(selected_combo_index)
+        self.current_camera_index = selected if selected is not None else previous
+        self.combo_cameras.blockSignals(False)
+        self.lbl_camera_name.setText(f"Camera {self.current_camera_index}")
+        print(f"[CameraSettings] Cameras refreshed: {self.available_cameras}")
     
     def cleanup(self):
         """Clean up resources"""

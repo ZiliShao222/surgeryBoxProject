@@ -84,7 +84,7 @@ class ExternalUDPListener(QThread):
             print(f"[External->MCU] Send error (listener socket): {e}")
         return False
 
-from app.camera_manager import CameraThread
+from app.camera_manager import CameraThread, get_configured_camera_index
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.imu_posture_reader import ImuPostureThread
 from app.training_records import get_training_record_manager
@@ -442,10 +442,10 @@ class RemoveNeedleTraining(QWidget):
         self.board_port = 4210
         self.local_udp_port = 4211  # PC监听端口
         self.external_thread = None
-        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+        self.hardware_transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
         if self.hardware_transport not in ("serial", "udp"):
-            self.hardware_transport = "udp"
-        self.serial_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3").strip() or "COM3"
+            self.hardware_transport = "serial"
+        self.serial_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6").strip() or "COM6"
         try:
             self.serial_baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
         except ValueError:
@@ -779,8 +779,9 @@ class RemoveNeedleTraining(QWidget):
             self.camera_display.setStyleSheet("background: black; color: white; font-size: 20px;")
             return
         try:
-            print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread")
-            self.camera_thread = CameraThread(camera_index=0)
+            camera_index = get_configured_camera_index(0)
+            print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread index={camera_index}")
+            self.camera_thread = CameraThread(camera_index=camera_index)
             print(f"[RemoveNeedleTraining._setup_camera] Connecting frame_ready signal")
             self.camera_thread.frame_ready.connect(self._on_frame_ready)
             print(f"[RemoveNeedleTraining._setup_camera] Starting camera thread")
@@ -1990,6 +1991,7 @@ class RemoveNeedleTraining(QWidget):
         """确保监听socket就绪后再发送Start，避免回包落到随机端口"""
         try:
             if self._hardware_ready():
+                self._send_hardware_message("HELLO_PC")
                 self._send_hardware_message("Start")
                 return
         except Exception:

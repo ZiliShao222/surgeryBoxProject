@@ -16,6 +16,8 @@ void handleHttpServer();
 
 // 循环调用，处理收到的UDP数据（Start/Stop/Winding）
 void handleUDPMessages();
+void handleSerialHardwareCommands();
+void handleHardwareCommand(const String& msg, bool echo);
 
 // 主动向某IP/端口发送消息
 void sendUDPMessage(const IPAddress& ip, uint16_t port, const String& msg);
@@ -25,6 +27,10 @@ void sendUDPMessageToLast(const String& msg);
 
 // 发送事件信号（Pain/HighDamp/LowDamp/Keep等）
 void sendSignal(const String& sig);
+
+// Periodic encoder telemetry for the PC UI.
+void resetEncoderTelemetryClock();
+void sendEncoderTelemetry(bool force = false);
 
 // 阻塞等待指定指令
 bool waitForCmd(const String& target);

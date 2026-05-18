@@ -3892,15 +3892,15 @@ class StudentShell(QWidget):
     def _refresh_serial_display(self):
         """Refresh the hardware transport status shown on the Simulator page."""
         try:
-            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
             if transport not in ("serial", "udp"):
-                transport = "udp"
+                transport = "serial"
             if transport == "udp":
                 self.lbl_current_wifi.setText("WiFi UDP: surgeryBox -> 192.168.4.1:4210 (PC 4211)")
                 return
 
             from app.hardware.serial_connector import list_serial_ports
-            preferred_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+            preferred_port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6")
             baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
             ports = list_serial_ports()
             if ports:
@@ -3917,9 +3917,9 @@ class StudentShell(QWidget):
     def _show_wired_hardware_hint(self):
         """Show hardware setup hints without changing system WiFi."""
         try:
-            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
             if transport == "serial":
-                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6")
                 baudrate = os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200")
                 text = (
                     f"Serial mode: connect mannequin USB serial and camera to this PC. "
@@ -4007,10 +4007,10 @@ class StudentShell(QWidget):
             if hasattr(self, 'connection_thread') and self.connection_thread and self.connection_thread.isRunning():
                 return  # Already testing, ignore new request
             
-            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "udp").strip().lower()
+            transport = os.getenv("SURGERYBOX_HARDWARE_TRANSPORT", "serial").strip().lower()
             if transport == "serial":
                 from app.hardware.serial_connector import SerialConnectionTestThread
-                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM3")
+                port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6")
                 try:
                     baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUDRATE", "115200"))
                 except ValueError:
