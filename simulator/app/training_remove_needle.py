@@ -23,7 +23,12 @@ except Exception as exc:
 else:
     SERIAL_IMPORT_ERROR = None
 
-from app.camera_manager import CameraThread, get_configured_camera_index
+from app.camera_manager import (
+    CameraThread,
+    get_configured_camera_index,
+    get_required_gemini_camera_index,
+    required_gemini_camera_status,
+)
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.imu_posture_reader import ImuPostureThread
 from app.i18n import tr
@@ -497,6 +502,8 @@ class RemoveNeedleTraining(QWidget):
         self._hardware_start_retry_active = False
         self._hardware_start_retry_count = 0
         self._hardware_start_retry_limit = 12
+        self._active_hardware_event = None
+        self._queued_hardware_events = []
 
         self.imu_thread = None
         self.imu_port = os.environ.get("IMU_PORT", "COM3")
@@ -815,7 +822,13 @@ class RemoveNeedleTraining(QWidget):
     def _setup_camera(self):
         """设置摄像头"""
         try:
-            camera_index = get_configured_camera_index(0)
+            ok, message, _names = required_gemini_camera_status()
+            if not ok:
+                print(f"[RemoveNeedleTraining._setup_camera] {message}")
+                self.camera_display.setText(message)
+                self.camera_thread = None
+                return
+            camera_index = get_required_gemini_camera_index(get_configured_camera_index(0))
             print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread index={camera_index}")
             self.camera_thread = CameraThread(camera_index=camera_index)
             print(f"[RemoveNeedleTraining._setup_camera] Connecting frame_ready signal")
@@ -2015,6 +2028,9 @@ class RemoveNeedleTraining(QWidget):
         self._hardware_start_confirmed = False
         self._hardware_start_retry_active = False
         self._hardware_start_retry_count = 0
+        self._active_hardware_event = None
+        self._queued_hardware_events = []
+        self._hardware_events_seen = set()
         
         # 显示Phase 4指导文字
         guide_text = "Pull out the epidural catheter smoothly and steadily."
@@ -2271,20 +2287,56 @@ class RemoveNeedleTraining(QWidget):
 
     def _trigger_hardware_quiz(self, question_id: str, event_name: str):
         """Trigger a quiz once when the MCU reports a physical event."""
-        if self.quiz_paused:
-            return
         if not hasattr(self, "_hardware_events_seen"):
             self._hardware_events_seen = set()
+        if not hasattr(self, "_queued_hardware_events"):
+            self._queued_hardware_events = []
         key = event_name
         if key in self._hardware_events_seen:
             return
+        if self.quiz_paused:
+            queued_keys = {evt for _, evt in self._queued_hardware_events}
+            if key not in queued_keys:
+                self._queued_hardware_events.append((question_id, event_name))
+                print(f"[Hardware] Queued event while quiz is active: {event_name}->{question_id}")
+            return
         self._hardware_events_seen.add(key)
+        self._active_hardware_event = event_name
         if question_id == "Q3":
             self._trigger_quiz_q3()
         elif question_id == "Q4":
             self._trigger_quiz_q4()
         elif question_id == "Q5":
             self._trigger_quiz_q5()
+
+    def _hardware_event_completed_count(self, event_name: str):
+        """Return the minimum completed-event count implied by an MCU event."""
+        event_order = {
+            "pain": 1,
+            "pain2": 2,
+            "highdamp": 3,
+            "lowdamp": 4,
+            "keep": 4,
+        }
+        return event_order.get((event_name or "").strip().lower())
+
+    def _process_next_queued_hardware_event(self):
+        """Trigger hardware events that arrived while a quiz dialog was open."""
+        if self.quiz_paused:
+            return
+        if not getattr(self, "_queued_hardware_events", None):
+            return
+
+        question_id, event_name = self._queued_hardware_events.pop(0)
+        if event_name in getattr(self, "_hardware_events_seen", set()):
+            QTimer.singleShot(0, self._process_next_queued_hardware_event)
+            return
+
+        self.last_event_msg = event_name
+        self._sync_progress_from_hardware_event(event_name)
+        self._update_info_overlay()
+        print(f"[Hardware] Processing queued event: {event_name}->{question_id}")
+        self._trigger_hardware_quiz(question_id, event_name)
 
     def _update_info_overlay(self):
         try:
@@ -2938,7 +2990,14 @@ class RemoveNeedleTraining(QWidget):
         except Exception:
             pass
 
-        if self.phase4_events_completed < expected_events:
+        active_event = getattr(self, "_active_hardware_event", None)
+        hardware_completed = self._hardware_event_completed_count(active_event)
+        if hardware_completed is not None:
+            self.phase4_events_completed = max(
+                self.phase4_events_completed,
+                min(hardware_completed, expected_events),
+            )
+        elif self.phase4_events_completed < expected_events:
             self.phase4_events_completed += 1
         result_text = "correctly" if quiz_correct else "incorrectly"
         print(
@@ -2947,7 +3006,7 @@ class RemoveNeedleTraining(QWidget):
         )
 
         if self.use_hardware_pull and self.hardware_transport in ("serial", "udp"):
-            last_event = (self.last_event_msg or "").strip().lower()
+            last_event = (active_event or self.last_event_msg or "").strip().lower()
             if last_event == "lowdamp":
                 continue_cmd = "OK1"
             elif last_event == "keep":
@@ -2955,12 +3014,21 @@ class RemoveNeedleTraining(QWidget):
             else:
                 continue_cmd = "OK"
             self._send_hardware_message(continue_cmd)
+        self._active_hardware_event = None
         
         # 重置拉线状态，使后续拉线灵敏度恢复正常
         self.pull_start_y = None
         self.pinch_history = []
         self.hand_pinching_near_needle = False
         print(f"[RemoveNeedleTraining] Phase 4 resumed after quiz")
+
+        if (
+            self.phase4_events_completed >= expected_events
+            and self.max_pulled_distance_cm >= self._phase4_target_distance_cm()
+        ):
+            QTimer.singleShot(0, self._phase_4_complete)
+        else:
+            QTimer.singleShot(0, self._process_next_queued_hardware_event)
 
     def record_quiz_result(self, question_id: str, is_correct: bool):
         """Record the result for a triggered quiz question.

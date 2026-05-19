@@ -84,7 +84,12 @@ class ExternalUDPListener(QThread):
             print(f"[External->MCU] Send error (listener socket): {e}")
         return False
 
-from app.camera_manager import CameraThread, get_configured_camera_index
+from app.camera_manager import (
+    CameraThread,
+    get_configured_camera_index,
+    get_required_gemini_camera_index,
+    required_gemini_camera_status,
+)
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.imu_posture_reader import ImuPostureThread
 from app.i18n import tr
@@ -452,7 +457,7 @@ class RemoveNeedleTraining(QWidget):
         except ValueError:
             self.serial_baudrate = 115200
         self.serial_thread = None
-        self.auto_rewind_after_training = os.getenv("SURGERYBOX_AUTO_REWIND", "1").strip().lower() not in ("0", "false", "no")
+        self.auto_rewind_after_training = os.getenv("SURGERYBOX_AUTO_REWIND", "0").strip().lower() not in ("0", "false", "no")
         self.external_event_flags = []
         # 速度显示相关（MCU模式）
         self.speed_display_end = 0.0
@@ -780,7 +785,14 @@ class RemoveNeedleTraining(QWidget):
             self.camera_display.setStyleSheet("background: black; color: white; font-size: 20px;")
             return
         try:
-            camera_index = get_configured_camera_index(0)
+            ok, message, _names = required_gemini_camera_status()
+            if not ok:
+                print(f"[RemoveNeedleTraining._setup_camera] {message}")
+                self.camera_thread = None
+                self.camera_display.setText(message)
+                self.camera_display.setStyleSheet("background: black; color: white; font-size: 20px;")
+                return
+            camera_index = get_required_gemini_camera_index(get_configured_camera_index(0))
             print(f"[RemoveNeedleTraining._setup_camera] Creating CameraThread index={camera_index}")
             self.camera_thread = CameraThread(camera_index=camera_index)
             print(f"[RemoveNeedleTraining._setup_camera] Connecting frame_ready signal")

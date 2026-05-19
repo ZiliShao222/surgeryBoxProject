@@ -110,6 +110,11 @@ class App(QMainWindow):
 
 
     def _logout(self):
+        if hasattr(self, 'main') and self.main and hasattr(self.main, '_stop_manual_rewind'):
+            try:
+                self.main._stop_manual_rewind(silent=True)
+            except Exception:
+                pass
         # Clean up camera manager if it exists
         if hasattr(self, 'main') and self.main and hasattr(self.main, 'camera_manager_widget'):
             try:
@@ -229,6 +234,16 @@ class StudentShell(QWidget):
         self.student_heading_font = "Aptos"
         self.student_body_font = "Aptos"
         self.student_mono_font = "Cascadia Mono"
+        self.manual_rewind_serial = None
+        self.manual_rewind_active = False
+        self.manual_rewind_pending = False
+        try:
+            self.manual_rewind_timeout_ms = int(os.getenv("SURGERYBOX_MANUAL_REWIND_MS", "7000"))
+        except ValueError:
+            self.manual_rewind_timeout_ms = 7000
+        self.manual_rewind_timer = QTimer(self)
+        self.manual_rewind_timer.setSingleShot(True)
+        self.manual_rewind_timer.timeout.connect(self._on_manual_rewind_timeout)
 
         # --- click sound (default) ---
         self.click_sfx = QSoundEffect()
@@ -362,7 +377,7 @@ class StudentShell(QWidget):
 
         # Logout
         self.btn_logout = QPushButton(tr("common.logout_user", username=self.user.username))
-        self.btn_logout.clicked.connect(lambda: self._on_button_click(self.on_logout))
+        self.btn_logout.clicked.connect(lambda: self._on_button_click(self._logout_from_student_shell))
         top_l.addWidget(self.btn_logout)
 
         # Unified button style (boxed look)
@@ -558,6 +573,10 @@ class StudentShell(QWidget):
             self.btn_settings.setText(tr("common.settings"))
         if hasattr(self, "btn_logout"):
             self.btn_logout.setText(tr("common.logout_user", username=self.user.username))
+        if hasattr(self, "manual_rewind_btn"):
+            self.manual_rewind_btn.setText(self._manual_rewind_button_text())
+        if hasattr(self, "manual_rewind_status"):
+            self._refresh_manual_rewind_status_text()
         if hasattr(self, "modules_label"):
             self.modules_label.setText(tr("student.modules"))
         if hasattr(self, "_menu_items"):
@@ -982,9 +1001,15 @@ class StudentShell(QWidget):
             except Exception:
                 pass
 
+    def _logout_from_student_shell(self):
+        self._stop_manual_rewind(silent=True)
+        if callable(self.on_logout):
+            self.on_logout()
+
     def _on_training_button_click(self, training_key: str):
         """处理训练按钮点击"""
         print(f"\n[MainWindow] _on_training_button_click called with key: {training_key}")
+        self._stop_manual_rewind(silent=True)
         
         # 播放点击音效
         if self.click_sfx:
@@ -1212,6 +1237,7 @@ class StudentShell(QWidget):
     
     def _on_menu(self, current, _prev):
         """Handle left-menu navigation."""
+        self._stop_manual_rewind(silent=True)
         # Stop any active training first.
         self._stop_current_training()
         
@@ -1367,7 +1393,18 @@ class StudentShell(QWidget):
         records_btn.setStyleSheet(self._student_action_button_style())
         records_btn.clicked.connect(lambda: self._on_button_click(self._show_training_records))
         actions.addWidget(records_btn)
+
+        rewind_btn = QPushButton(self._manual_rewind_button_text())
+        rewind_btn.setStyleSheet(self._manual_rewind_button_style())
+        rewind_btn.clicked.connect(lambda: self._on_button_click(self._toggle_manual_rewind))
+        self.manual_rewind_btn = rewind_btn
+        actions.addWidget(rewind_btn)
         layout.addLayout(actions)
+
+        self.manual_rewind_status = QLabel(self._manual_rewind_default_status())
+        self.manual_rewind_status.setWordWrap(True)
+        self.manual_rewind_status.setStyleSheet(self._manual_rewind_status_style())
+        layout.addWidget(self.manual_rewind_status)
 
         recent_title = QLabel(tr("student.recent_training"))
         recent_title.setStyleSheet(
@@ -1484,6 +1521,184 @@ class StudentShell(QWidget):
                 border-color: {palette['accent_deep']};
             }}
         """
+
+    def _manual_rewind_button_text(self):
+        if getattr(self, "manual_rewind_active", False) or getattr(self, "manual_rewind_pending", False):
+            return tr("student.stop_rewind")
+        return tr("student.rewind_line")
+
+    def _manual_rewind_default_status(self):
+        seconds = max(1, self.manual_rewind_timeout_ms // 1000)
+        return tr("student.rewind_hint", seconds=seconds)
+
+    def _manual_rewind_button_style(self):
+        palette = self._student_theme_tokens()
+        return f"""
+            QPushButton {{
+                background: rgba(255, 190, 96, 0.22);
+                border: 1px solid #E58A2A;
+                border-radius: 16px;
+                padding: 16px;
+                font-family: '{self.student_heading_font}', '{self.student_body_font}', 'Segoe UI', Arial;
+                font-size: 16px;
+                font-weight: 800;
+                color: {palette['text']};
+                min-height: 78px;
+            }}
+            QPushButton:hover {{
+                background: rgba(255, 190, 96, 0.34);
+                border-color: #B86116;
+            }}
+        """
+
+    def _manual_rewind_status_style(self, error=False):
+        palette = self._student_theme_tokens()
+        color = "#B84A32" if error else palette["muted"]
+        return (
+            f"font-family: '{self.student_body_font}', 'Segoe UI', Arial; "
+            f"font-size: 13px; color: {color}; font-weight: 700; "
+            "background: transparent;"
+        )
+
+    def _set_manual_rewind_status(self, text, error=False):
+        if hasattr(self, "manual_rewind_status") and self.manual_rewind_status:
+            self.manual_rewind_status.setText(text)
+            self.manual_rewind_status.setStyleSheet(self._manual_rewind_status_style(error))
+
+    def _refresh_manual_rewind_status_text(self):
+        if self.manual_rewind_pending:
+            self._set_manual_rewind_status(tr("student.rewind_preparing"))
+        elif self.manual_rewind_active:
+            self._set_manual_rewind_status(tr("student.rewind_running"))
+        else:
+            self._set_manual_rewind_status(self._manual_rewind_default_status())
+
+    def _manual_rewind_direction(self):
+        direction = os.getenv("SURGERYBOX_MANUAL_REWIND_DIRECTION", "MR").strip().upper()
+        return direction if direction in ("MR", "MF") else "MR"
+
+    def _toggle_manual_rewind(self):
+        if self.manual_rewind_active or self.manual_rewind_pending:
+            self._stop_manual_rewind()
+        else:
+            self._start_manual_rewind()
+
+    def _start_manual_rewind(self):
+        if getattr(self, "current_training", None):
+            self._set_manual_rewind_status(tr("student.rewind_training_active"), error=True)
+            return
+
+        try:
+            import serial
+        except Exception as exc:
+            self._set_manual_rewind_status(
+                tr("student.rewind_unavailable", message=f"pyserial unavailable: {exc}"),
+                error=True,
+            )
+            return
+
+        port = os.getenv("SURGERYBOX_SERIAL_PORT", "COM6")
+        try:
+            baudrate = int(os.getenv("SURGERYBOX_SERIAL_BAUD", "115200"))
+        except ValueError:
+            baudrate = 115200
+
+        self._close_manual_rewind_serial()
+        try:
+            self.manual_rewind_serial = serial.Serial(
+                port,
+                baudrate,
+                timeout=0.2,
+                write_timeout=0.5,
+            )
+            try:
+                self.manual_rewind_serial.dtr = False
+                self.manual_rewind_serial.rts = False
+            except Exception:
+                pass
+        except Exception as exc:
+            self.manual_rewind_serial = None
+            self.manual_rewind_pending = False
+            self.manual_rewind_active = False
+            self._set_manual_rewind_status(
+                tr("student.rewind_unavailable", message=f"{port}: {exc}"),
+                error=True,
+            )
+            return
+
+        self.manual_rewind_pending = True
+        self.manual_rewind_active = False
+        self._update_manual_rewind_button()
+        self._set_manual_rewind_status(tr("student.rewind_preparing"))
+        QTimer.singleShot(1300, self._begin_manual_rewind_after_boot)
+
+    def _begin_manual_rewind_after_boot(self):
+        if not self.manual_rewind_pending:
+            return
+        if not self.manual_rewind_serial or not self.manual_rewind_serial.is_open:
+            self.manual_rewind_pending = False
+            self._update_manual_rewind_button()
+            self._set_manual_rewind_status(tr("student.rewind_unavailable", message="serial closed"), error=True)
+            return
+
+        direction = self._manual_rewind_direction()
+        if not self._write_manual_rewind_command("BR"):
+            self._stop_manual_rewind(silent=True)
+            self._set_manual_rewind_status(tr("student.rewind_unavailable", message="failed to release brake"), error=True)
+            return
+        if not self._write_manual_rewind_command(direction):
+            self._stop_manual_rewind(silent=True)
+            self._set_manual_rewind_status(tr("student.rewind_unavailable", message="failed to start motor"), error=True)
+            return
+
+        self.manual_rewind_pending = False
+        self.manual_rewind_active = True
+        self._update_manual_rewind_button()
+        self._set_manual_rewind_status(tr("student.rewind_running"))
+        self.manual_rewind_timer.start(max(1000, self.manual_rewind_timeout_ms))
+
+    def _write_manual_rewind_command(self, command):
+        try:
+            if not self.manual_rewind_serial or not self.manual_rewind_serial.is_open:
+                return False
+            payload = (command.strip() + "\n").encode("utf-8")
+            self.manual_rewind_serial.write(payload)
+            self.manual_rewind_serial.flush()
+            print(f"[ManualRewind] Sent: {command}")
+            return True
+        except Exception as exc:
+            print(f"[ManualRewind] Send failed for {command}: {exc}")
+            return False
+
+    def _stop_manual_rewind(self, silent=False):
+        was_active = self.manual_rewind_active or self.manual_rewind_pending
+        self.manual_rewind_timer.stop()
+        if self.manual_rewind_serial and self.manual_rewind_serial.is_open:
+            self._write_manual_rewind_command("MS")
+            self._write_manual_rewind_command("BL")
+        self.manual_rewind_active = False
+        self.manual_rewind_pending = False
+        self._close_manual_rewind_serial()
+        self._update_manual_rewind_button()
+        if not silent and was_active:
+            self._set_manual_rewind_status(tr("student.rewind_stopped"))
+
+    def _on_manual_rewind_timeout(self):
+        self._stop_manual_rewind(silent=True)
+        self._set_manual_rewind_status(tr("student.rewind_timeout"), error=True)
+
+    def _close_manual_rewind_serial(self):
+        try:
+            if self.manual_rewind_serial and self.manual_rewind_serial.is_open:
+                self.manual_rewind_serial.close()
+        except Exception:
+            pass
+        self.manual_rewind_serial = None
+
+    def _update_manual_rewind_button(self):
+        if hasattr(self, "manual_rewind_btn") and self.manual_rewind_btn:
+            self.manual_rewind_btn.setText(self._manual_rewind_button_text())
+            self.manual_rewind_btn.setStyleSheet(self._manual_rewind_button_style())
 
     def _student_combo_style(self, palette=None):
         palette = palette or self._student_theme_tokens()

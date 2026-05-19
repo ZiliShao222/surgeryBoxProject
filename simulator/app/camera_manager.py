@@ -5,6 +5,7 @@ Handles camera detection, selection, and preview
 
 import os
 import json
+import subprocess
 from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QRect
 from PySide6.QtWidgets import (
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton, QFrame, QMessageBox
 )
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
-from PySide6.QtMultimedia import QMediaDevices, QMediaCaptureSession, QCamera
+from PySide6.QtMultimedia import QMediaDevices, QMediaCaptureSession, QCamera, QVideoSink
 from PySide6.QtMultimediaWidgets import QVideoWidget
 
 import cv2
@@ -58,6 +59,121 @@ def get_configured_camera_index(default=0):
     return _parse_int(settings.get("camera_index"), default)
 
 
+def _env_flag(name, default=True):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _required_camera_keywords():
+    raw = os.getenv(
+        "SURGERYBOX_REQUIRED_CAMERA",
+        "Gemini 335,Gemini335,Gemini 336,Gemini336,Orbbec Gemini",
+    )
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def list_connected_camera_names():
+    """Return camera names from Qt/Windows so AR does not open a wrong camera."""
+    names = []
+    try:
+        for device in QMediaDevices.videoInputs():
+            try:
+                name = device.description()
+            except Exception:
+                name = ""
+            if name and name not in names:
+                names.append(name)
+    except Exception as exc:
+        print(f"[Camera] Qt camera enumeration failed: {exc}")
+
+    if names:
+        return names
+
+    if os.name == "nt":
+        try:
+            startupinfo = None
+            creationflags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creationflags = subprocess.CREATE_NO_WINDOW
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-PnpDevice -Class Camera -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FriendlyName",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+            for line in completed.stdout.splitlines():
+                name = line.strip()
+                if name and name not in names:
+                    names.append(name)
+        except Exception as exc:
+            print(f"[Camera] Windows camera enumeration failed: {exc}")
+    return names
+
+
+def _is_required_camera_name(name):
+    lowered = (name or "").lower()
+    if not any(keyword in lowered for keyword in _required_camera_keywords()):
+        return False
+    if _env_flag("SURGERYBOX_REQUIRE_GEMINI_RGB", True):
+        return "rgb" in lowered and "depth" not in lowered
+    return True
+
+
+def get_required_gemini_camera_device():
+    """Return the exact Qt camera device for the Gemini RGB camera."""
+    try:
+        for device in QMediaDevices.videoInputs():
+            try:
+                name = device.description()
+            except Exception:
+                name = ""
+            if _is_required_camera_name(name):
+                return device
+    except Exception as exc:
+        print(f"[Camera] Gemini camera device lookup failed: {exc}")
+    return None
+
+
+def required_gemini_camera_status():
+    """Return whether the required Gemini RGB camera is connected."""
+    if not _env_flag("SURGERYBOX_REQUIRE_GEMINI_CAMERA", True):
+        return True, "Gemini camera requirement disabled", list_connected_camera_names()
+
+    names = list_connected_camera_names()
+    if any(_is_required_camera_name(name) for name in names):
+        return True, "Required Gemini RGB camera detected", names
+
+    expected = os.getenv("SURGERYBOX_REQUIRED_CAMERA_LABEL", "Gemini 335L/336L RGB Camera")
+    detected = ", ".join(names) if names else "none"
+    return False, f"{expected} not detected. Detected cameras: {detected}", names
+
+
+def get_required_gemini_camera_index(default=None):
+    """Best-effort OpenCV index for the required Gemini RGB camera."""
+    if not _env_flag("SURGERYBOX_REQUIRE_GEMINI_CAMERA", True):
+        return default
+    try:
+        for index, device in enumerate(QMediaDevices.videoInputs()):
+            try:
+                name = device.description()
+            except Exception:
+                name = ""
+            if _is_required_camera_name(name):
+                return index
+    except Exception:
+        pass
+    return default
+
+
 def save_configured_camera_index(camera_index):
     settings = _load_settings()
     settings["camera_index"] = int(camera_index)
@@ -66,7 +182,8 @@ def save_configured_camera_index(camera_index):
 
 def get_opencv_camera_backend():
     """Choose an OpenCV backend. DirectShow is usually best for USB cameras on Windows."""
-    backend_name = os.getenv("SURGERYBOX_CAMERA_BACKEND", "dshow").strip().lower()
+    default_backend = "msmf" if _env_flag("SURGERYBOX_REQUIRE_GEMINI_CAMERA", True) else "dshow"
+    backend_name = os.getenv("SURGERYBOX_CAMERA_BACKEND", default_backend).strip().lower()
     if backend_name in ("default", "auto", ""):
         return 0, "default"
     mapping = {
@@ -78,6 +195,11 @@ def get_opencv_camera_backend():
 
 
 def open_camera_capture(camera_index):
+    ok, message, _names = required_gemini_camera_status()
+    if not ok:
+        print(f"[Camera] {message}")
+        return cv2.VideoCapture()
+
     backend, backend_name = get_opencv_camera_backend()
     if backend:
         cap = cv2.VideoCapture(int(camera_index), backend)
@@ -85,6 +207,10 @@ def open_camera_capture(camera_index):
         cap = cv2.VideoCapture(int(camera_index))
     if cap.isOpened():
         print(f"[Camera] Opened camera {camera_index} using backend={backend_name}")
+        return cap
+
+    if _env_flag("SURGERYBOX_REQUIRE_GEMINI_CAMERA", True):
+        print(f"[Camera] Refusing fallback because Gemini camera is required. Failed index={camera_index}, backend={backend_name}")
         return cap
 
     # Fallback to OpenCV default in case a vendor driver dislikes DirectShow.
@@ -129,10 +255,22 @@ class CameraThread(QThread):
         self.camera_index = camera_index
         self.is_running = True
         self.cap = None
+        self._using_qt_camera = False
+        self._qt_camera = None
+        self._qt_session = None
+        self._qt_sink = None
     
     def run(self):
         """Capture frames from camera"""
+        if _env_flag("SURGERYBOX_REQUIRE_GEMINI_CAMERA", True) and _env_flag("SURGERYBOX_USE_QT_GEMINI_CAMERA", False):
+            self._run_qt_gemini_camera()
+            return
+
         try:
+            ok, message, _names = required_gemini_camera_status()
+            if not ok:
+                self.error.emit(message)
+                return
             self.cap = open_camera_capture(self.camera_index)
             if not self.cap.isOpened():
                 self.error.emit(f"Could not open camera index {self.camera_index}. Check camera connection or close other apps using it.")
@@ -172,22 +310,87 @@ class CameraThread(QThread):
                 pass
         finally:
             self.cleanup()
+
+    def _run_qt_gemini_camera(self):
+        """Capture from the exact Gemini RGB QCameraDevice instead of a fragile numeric index."""
+        self._using_qt_camera = True
+        try:
+            ok, message, _names = required_gemini_camera_status()
+            if not ok:
+                self.error.emit(message)
+                return
+
+            device = get_required_gemini_camera_device()
+            if device is None:
+                self.error.emit("Gemini RGB camera was detected earlier but no Qt camera device is available now.")
+                return
+
+            self._qt_sink = QVideoSink()
+            self._qt_camera = QCamera(device)
+            self._qt_session = QMediaCaptureSession()
+            self._qt_session.setCamera(self._qt_camera)
+            self._qt_session.setVideoSink(self._qt_sink)
+            self._qt_sink.videoFrameChanged.connect(self._on_qt_video_frame)
+            try:
+                self._qt_camera.errorOccurred.connect(
+                    lambda _error, message="": self.error.emit(message or "Qt camera error")
+                )
+            except Exception:
+                pass
+            print(f"[Camera] Opened Gemini RGB camera using Qt: {device.description()}")
+            self._qt_camera.start()
+            self.exec()
+        except Exception as exc:
+            print(f"Qt Gemini camera initialization error: {exc}")
+            try:
+                self.error.emit(str(exc))
+            except Exception:
+                pass
+        finally:
+            self._cleanup_qt_camera()
+
+    def _on_qt_video_frame(self, frame):
+        if not self.is_running:
+            return
+        try:
+            image = frame.toImage()
+            if image.isNull():
+                return
+            self.frame_ready.emit(image.copy())
+        except Exception as exc:
+            print(f"Qt camera frame conversion error: {exc}")
     
     def cleanup(self):
         """Safely release camera resources"""
         try:
+            if self._using_qt_camera:
+                self.quit()
+                return
             if self.cap is not None:
                 self.cap.release()
                 self.cap = None
         except Exception as e:
             print(f"Error releasing camera: {e}")
+
+    def _cleanup_qt_camera(self):
+        try:
+            if self._qt_camera:
+                self._qt_camera.stop()
+        except Exception as e:
+            print(f"Error stopping Qt camera: {e}")
+        self._qt_camera = None
+        self._qt_session = None
+        self._qt_sink = None
     
     def stop(self):
         """Stop camera capture"""
         try:
             print(f"[CameraThread.stop] Stopping camera thread")
             self.is_running = False
-            self.cleanup()
+            if self._using_qt_camera:
+                self.quit()
+            else:
+                self.cleanup()
             if self.isRunning():
                 stopped = self.wait(2000)
                 if stopped:
