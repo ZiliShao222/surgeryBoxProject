@@ -87,6 +87,7 @@ class ExternalUDPListener(QThread):
 from app.camera_manager import CameraThread, get_configured_camera_index
 from app.hand_gesture_recognizer import HandGestureRecognizer
 from app.imu_posture_reader import ImuPostureThread
+from app.i18n import tr
 from app.training_records import get_training_record_manager
 
 
@@ -621,26 +622,26 @@ class RemoveNeedleTraining(QWidget):
         if not self.posture_overlay:
             return
         if status == "OK":
-            title = "已侧卧"
-            detail = "请保持侧卧状态"
+            title = tr("posture.ok_title")
+            detail = tr("posture.ok_detail")
             color = "#0F7A3A"
             border = "#24C66B"
             bg = "rgba(230, 255, 239, 220)"
         elif status == "BAD":
-            title = "未侧卧"
-            detail = "请将病人调整成侧卧状态"
+            title = tr("posture.bad_title")
+            detail = tr("posture.bad_detail")
             color = "#9A1B1B"
             border = "#FF5A5A"
             bg = "rgba(255, 238, 238, 225)"
         elif status == "ERROR":
-            title = "未连接体位传感器"
-            detail = "请关闭串口助手，确认 COM 口和 Type-C 连接"
+            title = tr("posture.error_title")
+            detail = tr("posture.error_detail", port=self.imu_port)
             color = "#8A5A00"
             border = "#F5B942"
             bg = "rgba(255, 249, 224, 225)"
         else:
-            title = "正在等待体位传感器"
-            detail = "请保持传感器连接"
+            title = tr("posture.waiting_title")
+            detail = tr("posture.waiting_detail", port=self.imu_port)
             color = "#24415F"
             border = "#6EA8D9"
             bg = "rgba(235, 246, 255, 220)"

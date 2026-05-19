@@ -25,6 +25,8 @@ else:
 
 from app.camera_manager import CameraThread, get_configured_camera_index
 from app.hand_gesture_recognizer import HandGestureRecognizer
+from app.imu_posture_reader import ImuPostureThread
+from app.i18n import tr
 from app.training_records import get_training_record_manager
 
 
@@ -495,6 +497,31 @@ class RemoveNeedleTraining(QWidget):
         self._hardware_start_retry_active = False
         self._hardware_start_retry_count = 0
         self._hardware_start_retry_limit = 12
+
+        self.imu_thread = None
+        self.imu_port = os.environ.get("IMU_PORT", "COM3")
+        try:
+            self.imu_baud = int(os.environ.get("IMU_BAUD", "115200"))
+        except ValueError:
+            self.imu_baud = 115200
+        self.imu_axis = os.environ.get("IMU_AXIS", "roll").lower()
+        self.posture_status = "WAITING"
+        self.posture_roll = 0.0
+        self.posture_pitch = 0.0
+        self.posture_yaw = 0.0
+        self.posture_angle = 0.0
+        self.posture_overlay = None
+        self.posture_required_hold_seconds = 3.0
+        self.posture_ok_since = None
+        self.posture_gate_passed = False
+        self.posture_blocked = True
+        self.posture_pause_started_at = None
+        self.pending_training_start = False
+        self.training_started_after_posture = False
+        self.paused_for_posture = False
+        self.paused_phase_timer_remaining_ms = None
+        self.paused_wipe_blood_remaining = None
+        self.paused_pinch_elapsed = None
         
         # 初始化组件
         print(f"[RemoveNeedleTraining] Setting up UI")
@@ -567,6 +594,9 @@ class RemoveNeedleTraining(QWidget):
             print(f"[RemoveNeedleTraining] Error initializing media player: {e}")
             self.media_player = None
             self.audio_output = None
+
+        print("[RemoveNeedleTraining] Starting IMU posture listener")
+        self._start_imu_posture_listener()
         
         print(f"[RemoveNeedleTraining] Initialization complete")
     
@@ -604,9 +634,168 @@ class RemoveNeedleTraining(QWidget):
         self.info_overlay.setVisible(False)
         
         # 成功显示
+        self.posture_overlay = QLabel(self.camera_display)
+        self.posture_overlay.setAlignment(Qt.AlignCenter)
+        self.posture_overlay.setWordWrap(True)
+        self.posture_overlay.setVisible(True)
+        self._layout_posture_overlay()
+        self._set_posture_overlay("WAITING", 0.0, 0.0, 0.0)
+
         print(f"[RemoveNeedleTraining._setup_ui] Creating success_display")
         self.success_display = SuccessDisplay(self.camera_display)
         print(f"[RemoveNeedleTraining._setup_ui] Complete")
+
+    def _layout_posture_overlay(self):
+        if not self.posture_overlay:
+            return
+        width = min(760, max(380, int(self.camera_display.width() * 0.74)))
+        height = 160
+        x = max(0, (self.camera_display.width() - width) // 2)
+        y = max(90, (self.camera_display.height() - height) // 2)
+        self.posture_overlay.setGeometry(x, y, width, height)
+
+    def _set_posture_overlay(self, status: str, roll: float, pitch: float, yaw: float):
+        if not self.posture_overlay:
+            return
+        if status == "OK":
+            title = tr("posture.ok_title")
+            detail = tr("posture.ok_detail")
+            color = "#0F7A3A"
+            border = "#24C66B"
+            bg = "rgba(230, 255, 239, 230)"
+        elif status == "BAD":
+            title = tr("posture.bad_title")
+            detail = tr("posture.bad_detail")
+            color = "#9A1B1B"
+            border = "#FF5A5A"
+            bg = "rgba(255, 238, 238, 235)"
+        elif status == "ERROR":
+            title = tr("posture.error_title")
+            detail = tr("posture.error_detail", port=self.imu_port)
+            color = "#8A5A00"
+            border = "#F5B942"
+            bg = "rgba(255, 249, 224, 235)"
+        else:
+            title = tr("posture.waiting_title")
+            detail = tr("posture.waiting_detail", port=self.imu_port)
+            color = "#24415F"
+            border = "#6EA8D9"
+            bg = "rgba(235, 246, 255, 230)"
+        self.posture_overlay.setText(f"{title}\n{detail}")
+        self.posture_overlay.setStyleSheet(f"""
+            QLabel {{
+                color: {color};
+                background: {bg};
+                border: 3px solid {border};
+                border-radius: 10px;
+                padding: 18px;
+                font-size: 26px;
+                font-weight: 700;
+            }}
+        """)
+        self.posture_overlay.raise_()
+
+    def _show_posture_overlay(self, status: str):
+        if not self.posture_overlay:
+            return
+        self.posture_overlay.show()
+        self._set_posture_overlay(status, self.posture_roll, self.posture_pitch, self.posture_yaw)
+
+    def _hide_posture_overlay(self):
+        if self.posture_overlay:
+            self.posture_overlay.hide()
+
+    def _start_imu_posture_listener(self):
+        if self.imu_thread:
+            return
+        try:
+            self.imu_thread = ImuPostureThread(
+                port=self.imu_port,
+                baud=self.imu_baud,
+                axis=self.imu_axis,
+                min_deg=55.0,
+                max_deg=125.0,
+                parent=self,
+            )
+            self.imu_thread.posture_changed.connect(self._on_imu_posture_changed)
+            self.imu_thread.error.connect(self._on_imu_posture_error)
+            self.imu_thread.start()
+            print(f"[IMU] Posture listener started on {self.imu_port} at {self.imu_baud}")
+        except Exception as exc:
+            self._on_imu_posture_error(str(exc))
+
+    def _on_imu_posture_changed(self, status: str, roll: float, pitch: float, yaw: float, angle: float):
+        self.posture_status = status
+        self.posture_roll = roll
+        self.posture_pitch = pitch
+        self.posture_yaw = yaw
+        self.posture_angle = angle
+        now = time.time()
+        if status == "OK":
+            if self.posture_ok_since is None:
+                self.posture_ok_since = now
+            self._show_posture_overlay("OK")
+            if now - self.posture_ok_since >= self.posture_required_hold_seconds:
+                self._release_posture_gate()
+        elif status == "BAD":
+            self.posture_ok_since = None
+            self._block_for_posture()
+        else:
+            self.posture_ok_since = None
+            self._show_posture_overlay(status)
+        self._set_posture_overlay(status, roll, pitch, yaw)
+        self._update_info_overlay()
+
+    def _on_imu_posture_error(self, message: str):
+        print(f"[IMU] {message}")
+        self.posture_status = "ERROR"
+        self.posture_ok_since = None
+        self._block_for_posture()
+        self._set_posture_overlay("ERROR", 0.0, 0.0, 0.0)
+        self._update_info_overlay()
+
+    def _block_for_posture(self):
+        self._show_posture_overlay("BAD")
+        if self.posture_blocked:
+            return
+        self.posture_blocked = True
+        self.paused_for_posture = True
+        self.posture_pause_started_at = time.time()
+        if self.phase_timer and self.phase_timer.isActive():
+            self.paused_phase_timer_remaining_ms = max(0, self.phase_timer.remainingTime())
+            self.phase_timer.stop()
+        if getattr(self, "wipe_blood_start_time", None) is not None:
+            elapsed = time.time() - self.wipe_blood_start_time
+            self.paused_wipe_blood_remaining = max(0.0, self.wipe_blood_duration - elapsed)
+            self.wipe_blood_start_time = None
+        if getattr(self, "pinch_start_time", None) is not None:
+            self.paused_pinch_elapsed = max(0.0, time.time() - self.pinch_start_time)
+            self.pinch_start_time = None
+        self.quiz_paused = True
+
+    def _release_posture_gate(self):
+        self.posture_gate_passed = True
+        if self.posture_blocked:
+            self.posture_blocked = False
+            self.quiz_paused = False
+            if self.posture_pause_started_at and self.training_start_time:
+                self.training_start_time += time.time() - self.posture_pause_started_at
+            self.posture_pause_started_at = None
+            if self.paused_wipe_blood_remaining is not None:
+                self.wipe_blood_start_time = time.time() - (self.wipe_blood_duration - self.paused_wipe_blood_remaining)
+                self.paused_wipe_blood_remaining = None
+            if self.paused_pinch_elapsed is not None:
+                self.pinch_start_time = time.time() - self.paused_pinch_elapsed
+                self.last_pinch_time = time.time()
+                self.paused_pinch_elapsed = None
+            if self.paused_phase_timer_remaining_ms is not None and self.phase_timer:
+                self.phase_timer.start(max(1, self.paused_phase_timer_remaining_ms))
+                self.paused_phase_timer_remaining_ms = None
+        self.paused_for_posture = False
+        self._hide_posture_overlay()
+        if self.pending_training_start:
+            self.pending_training_start = False
+            self._begin_training_after_posture_gate()
     
     def resizeEvent(self, event):
         """窗口大小改变时更新camera_display"""
@@ -616,6 +805,7 @@ class RemoveNeedleTraining(QWidget):
         self.text_display.setGeometry(0, 0, self.camera_display.width(), 200)
         if hasattr(self, "info_overlay") and self.info_overlay:
             self.info_overlay.setGeometry(10, 10, 460, 150)
+        self._layout_posture_overlay()
 
     def closeEvent(self, event):
         """Ensure camera/UDP threads are stopped before Qt destroys this widget."""
@@ -719,6 +909,18 @@ class RemoveNeedleTraining(QWidget):
         print(f"[RemoveNeedleTraining.start_training] Starting phase 0")
         self.current_phase = 0
         self.phase_transition_pending = False
+        if not self.posture_gate_passed:
+            self.pending_training_start = True
+            self._show_posture_overlay("BAD" if self.posture_status == "BAD" else self.posture_status)
+            print("[IMU] Waiting for 3 seconds of stable side-lying posture before training starts")
+            return
+        self._begin_training_after_posture_gate()
+
+    def _begin_training_after_posture_gate(self):
+        if self.training_started_after_posture:
+            return
+        self.training_started_after_posture = True
+        self.posture_blocked = False
         self._start_phase_1()
     
     def _start_phase_1(self):
@@ -857,6 +1059,9 @@ class RemoveNeedleTraining(QWidget):
             if ptr:
                 arr = np.frombuffer(ptr, np.uint8).reshape(height, width, 3)
                 frame = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                if self.posture_blocked:
+                    self._display_frame(frame)
+                    return
                 
                 # 手势检测 - 每5帧检测一次以减轻CPU压力
                 hand_data_list = []
@@ -2601,6 +2806,18 @@ class RemoveNeedleTraining(QWidget):
                 pass
             
             # 停止阶段计时器
+            try:
+                if self.imu_thread:
+                    print("[IMU] Stopping posture listener")
+                    self.imu_thread.stop_flag = True
+                    try:
+                        self.imu_thread.wait(1000)
+                    except Exception:
+                        pass
+                    self.imu_thread = None
+            except Exception:
+                pass
+
             if self.phase_timer:
                 print(f"[RemoveNeedleTraining.cleanup] Stopping phase_timer")
                 self.phase_timer.stop()
