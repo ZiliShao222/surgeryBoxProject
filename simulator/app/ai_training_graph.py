@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Dict, Iterable, List, Optional, TypedDict
 
+from app.agent_memory import AgentMemoryStore, compact_memory_for_prompt
 from app.i18n import get_language, tr, tr_choice, tr_training_label
 
 
@@ -31,6 +32,8 @@ class TrainingAnalysisState(TypedDict, total=False):
     session: Dict[str, Any]
     recent_records: List[Dict[str, Any]]
     metrics: Dict[str, Any]
+    agent_memory: Dict[str, Any]
+    updated_memory: Dict[str, Any]
     risk_assessment: Dict[str, Any]
     difficulty_plan: Dict[str, Any]
     student_debrief: Dict[str, Any]
@@ -236,9 +239,37 @@ def _event_completion(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _accuracy_from_data(data: Dict[str, Any], completion: Dict[str, Any]) -> float:
-    events_results = _as_list(data.get("events_results"))
-    if events_results:
-        correct = sum(1 for item in events_results if isinstance(item, dict) and item.get("correct") is True)
+    result_items = _as_list(data.get("events_results"))
+    if not result_items:
+        for key in ("quiz_results", "question_results", "assessment_results"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                result_items.extend(value.values())
+            else:
+                result_items.extend(_as_list(value))
+
+    if result_items:
+        answered = 0
+        correct = 0
+        for item in result_items:
+            if not isinstance(item, dict):
+                continue
+            result = item.get("correct")
+            if result is None:
+                result = item.get("is_correct")
+            if isinstance(result, str):
+                lowered = result.strip().lower()
+                if lowered in {"true", "correct", "yes", "1"}:
+                    result = True
+                elif lowered in {"false", "incorrect", "wrong", "no", "0"}:
+                    result = False
+            if result is True:
+                answered += 1
+                correct += 1
+            elif result is False:
+                answered += 1
+        if not answered:
+            return max(0.0, min(100.0, completion.get("completion_rate", 0.0) * 100.0))
         expected = max(completion.get("expected_events", 4), 1)
         return max(0.0, min(100.0, correct * 100.0 / expected))
 
@@ -250,21 +281,85 @@ def _accuracy_from_data(data: Dict[str, Any], completion: Dict[str, Any]) -> flo
 
 
 def _quiz_result_metrics(data: Dict[str, Any], expected_events: int, uses_quiz: bool = True) -> Dict[str, Any]:
-    events_results = _as_list(data.get("events_results"))
+    result_items = _as_list(data.get("events_results"))
+    if not result_items:
+        for key in ("quiz_results", "question_results", "assessment_results"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                result_items.extend(value.values())
+            else:
+                result_items.extend(_as_list(value))
+
     answered = 0
     correct = 0
     incorrect = 0
 
-    for item in events_results:
+    def first_number(*keys: str) -> Optional[float]:
+        for key in keys:
+            if data.get(key) is not None:
+                return _as_float(data.get(key))
+        return None
+
+    for item in result_items:
         if not isinstance(item, dict):
             continue
         result = item.get("correct")
+        if result is None:
+            result = item.get("is_correct")
+        if isinstance(result, str):
+            lowered = result.strip().lower()
+            if lowered in {"true", "correct", "yes", "1"}:
+                result = True
+            elif lowered in {"false", "incorrect", "wrong", "no", "0"}:
+                result = False
         if result is True:
             answered += 1
             correct += 1
         elif result is False:
             answered += 1
             incorrect += 1
+
+    if not answered:
+        direct_answered = first_number(
+            "quiz_answered_count",
+            "assessment_answered_count",
+            "answered_count",
+            "phase4_events_completed",
+            "events_completed",
+        )
+        if direct_answered is None:
+            triggered_count = _count_triggered_events(data.get("events_triggered"))
+            direct_answered = triggered_count if triggered_count > 0 else None
+
+        direct_correct = first_number(
+            "quiz_correct_count",
+            "assessment_correct_count",
+            "correct_count",
+            "correct_answers",
+            "correct_events",
+            "correct_steps",
+        )
+        direct_incorrect = first_number(
+            "quiz_incorrect_count",
+            "assessment_incorrect_count",
+            "incorrect_count",
+            "wrong_answers",
+            "incorrect_events",
+            "incorrect_steps",
+        )
+
+        if direct_correct is None and data.get("accuracy") is not None:
+            direct_correct = round(_as_float(data.get("accuracy")) * max(expected_events, 1) / 100.0)
+
+        if direct_correct is not None:
+            correct = max(0, int(round(direct_correct)))
+        if direct_incorrect is not None:
+            incorrect = max(0, int(round(direct_incorrect)))
+        if direct_answered is not None:
+            answered = max(0, int(round(direct_answered)))
+        else:
+            answered = correct + incorrect
+        answered = max(answered, correct + incorrect)
 
     if answered:
         quiz_accuracy = correct * 100.0 / max(expected_events, 1)
@@ -328,6 +423,12 @@ def build_training_metrics(session: Dict[str, Any], recent_records: Optional[Lis
     data = _compact_record(session)
     recent = [_compact_record(item) for item in (recent_records or []) if isinstance(item, dict)]
     training_mode = data.get("training_mode") or data.get("training_type") or "unknown"
+    record_id = (
+        data.get("record_id")
+        or data.get("file_path")
+        or data.get("completed_at")
+        or f"{training_mode}:{data.get('elapsed_time', '')}:{data.get('accuracy', '')}"
+    )
     profile = _training_profile(training_mode)
     completion = _event_completion(data)
     accuracy = _accuracy_from_data(data, completion)
@@ -356,6 +457,8 @@ def build_training_metrics(session: Dict[str, Any], recent_records: Optional[Lis
         trend_accuracy_delta = round(accuracy - recent_avg_accuracy, 1)
 
     return {
+        "record_id": record_id,
+        "file_path": data.get("file_path"),
         "training_mode": training_mode,
         "training_label": profile["label"],
         "event_label": profile["event_label"],
@@ -749,6 +852,7 @@ def _agent_display_name(agent: str) -> str:
     if get_language() != "zh":
         return agent
     names = {
+        "Memory Agent": "记忆智能体",
         "Metrics Analyst": "指标分析智能体",
         "Risk Agent": "风险评估智能体",
         "Difficulty Planner": "难度规划智能体",
@@ -910,6 +1014,73 @@ def build_decision_basis(
     return basis
 
 
+def _memory_value(value: Any) -> str:
+    text = str(value or "unknown").strip()
+    if get_language() != "zh":
+        return text
+    mapping = {
+        "new": "新建画像",
+        "advanced": "进阶稳定",
+        "intermediate": "中等水平",
+        "foundation": "基础巩固",
+        "high": "高",
+        "moderate": "中等",
+        "low": "低",
+        "unknown": "未知",
+        "stable": "稳定",
+        "developing": "发展中",
+        "needs repetition": "需要重复巩固",
+    }
+    return mapping.get(text.lower(), text)
+
+
+def _join_memory_items(items: Iterable[Any], limit: int = 3) -> str:
+    values = []
+    for item in items or []:
+        text = str(item or "").strip()
+        if text:
+            values.append(re.sub(r"\s+", " ", text))
+        if len(values) >= limit:
+            break
+    return "; ".join(values)
+
+
+def _render_memory_section(memory: Optional[Dict[str, Any]], audience: str = "student") -> str:
+    compact = compact_memory_for_prompt(memory)
+    count = int(_as_float(compact.get("sessions_remembered")))
+    if count <= 0:
+        return f"- {tr('report.memory_empty')}"
+
+    profile = compact.get("learner_profile") if isinstance(compact.get("learner_profile"), dict) else {}
+    lines = [
+        tr("report.memory_sessions", count=count),
+        tr("report.memory_level", level=_memory_value(profile.get("level", "new"))),
+    ]
+    focus = str(profile.get("primary_focus") or "").strip()
+    if focus:
+        lines.append(tr("report.memory_focus", focus=focus))
+
+    strengths = _join_memory_items(compact.get("recurring_strengths", []))
+    improvements = _join_memory_items(compact.get("recurring_improvements", []))
+    next_steps = _join_memory_items(compact.get("preferred_next_steps", []))
+    safety = _join_memory_items(compact.get("safety_watchpoints", []))
+    teacher_focus = _join_memory_items(compact.get("teacher_focus_history", []))
+
+    if strengths:
+        lines.append(tr("report.memory_strengths", items=strengths))
+    if improvements:
+        lines.append(tr("report.memory_improvements", items=improvements))
+    if audience == "teacher":
+        if teacher_focus:
+            lines.append(tr("report.memory_teacher_focus", items=teacher_focus))
+        if safety:
+            lines.append(tr("report.memory_safety", items=safety))
+    elif next_steps:
+        lines.append(tr("report.memory_next_steps", items=next_steps))
+
+    return _bullets(lines)
+
+
 def render_student_report(
     debrief: Dict[str, Any],
     metrics: Optional[Dict[str, Any]] = None,
@@ -917,6 +1088,7 @@ def render_student_report(
     plan: Optional[Dict[str, Any]] = None,
     decision_basis: Optional[List[str]] = None,
     trace: Optional[List[Dict[str, Any]]] = None,
+    memory: Optional[Dict[str, Any]] = None,
     backend: str = "sequential",
 ) -> str:
     metrics = metrics or {}
@@ -950,9 +1122,11 @@ def render_student_report(
         f"# {tr('report.student_title')}\n\n"
         f"**{tr('report.workflow')}:** {_localized_workflow_label(backend)}\n\n"
         f"## {tr('report.agent_workflow')}\n"
-        f"{_trace_lines(trace or [], {'Metrics Analyst', 'Risk Agent', 'Difficulty Planner', 'Student Debrief Agent', 'Report Writer'})}\n\n"
+        f"{_trace_lines(trace or [], {'Memory Agent', 'Metrics Analyst', 'Risk Agent', 'Difficulty Planner', 'Student Debrief Agent', 'Report Writer'})}\n\n"
         f"## {tr('report.performance_snapshot')}\n"
         f"{_markdown_table(snapshot_rows)}\n\n"
+        f"## {tr('report.memory_highlights')}\n"
+        f"{_render_memory_section(memory, 'student')}\n\n"
         f"## {tr('report.decision_basis')}\n"
         f"{_localized_bullets(decision_basis or build_decision_basis(metrics, risk, plan))}\n\n"
         f"## {tr('report.summary')}\n"
@@ -976,6 +1150,7 @@ def render_teacher_report(
     plan: Optional[Dict[str, Any]] = None,
     decision_basis: Optional[List[str]] = None,
     trace: Optional[List[Dict[str, Any]]] = None,
+    memory: Optional[Dict[str, Any]] = None,
     backend: str = "sequential",
 ) -> str:
     metrics = metrics or {}
@@ -1006,9 +1181,11 @@ def render_teacher_report(
         f"# {tr('report.teacher_title')}\n\n"
         f"**{tr('report.workflow')}:** {_localized_workflow_label(backend)}\n\n"
         f"## {tr('report.agent_workflow')}\n"
-        f"{_trace_lines(trace or [], {'Metrics Analyst', 'Risk Agent', 'Difficulty Planner', 'Teacher Coaching Agent', 'Report Writer'})}\n\n"
+        f"{_trace_lines(trace or [], {'Memory Agent', 'Metrics Analyst', 'Risk Agent', 'Difficulty Planner', 'Teacher Coaching Agent', 'Report Writer'})}\n\n"
         f"## {tr('report.student_snapshot')}\n"
         f"{_markdown_table(snapshot_rows)}\n\n"
+        f"## {tr('report.memory_highlights')}\n"
+        f"{_render_memory_section(memory, 'teacher')}\n\n"
         f"## {tr('report.decision_basis')}\n"
         f"{_localized_bullets(decision_basis or build_decision_basis(metrics, risk, plan))}\n\n"
         f"## {tr('report.recommendation')}\n"
@@ -1025,8 +1202,14 @@ def render_teacher_report(
 class TrainingAnalysisGraph:
     """Shared graph backend for student debriefs and teacher coaching."""
 
-    def __init__(self, config: Optional[TrainingAgentConfig] = None, enable_llm: bool = True):
+    def __init__(
+        self,
+        config: Optional[TrainingAgentConfig] = None,
+        enable_llm: bool = True,
+        memory_store: Optional[AgentMemoryStore] = None,
+    ):
         self.config = config or TrainingAgentConfig.from_environment(enable_llm=enable_llm)
+        self.memory_store = memory_store or AgentMemoryStore()
         self._compiled_graph = self._build_graph()
 
     @property
@@ -1063,19 +1246,23 @@ class TrainingAnalysisGraph:
 
         try:
             graph = StateGraph(TrainingAnalysisState)
+            graph.add_node("memory_retriever", self._node_memory_retriever)
             graph.add_node("metrics_analyzer", self._node_metrics_analyzer)
             graph.add_node("risk_agent", self._node_risk_agent)
             graph.add_node("difficulty_planner", self._node_difficulty_planner)
             graph.add_node("student_debrief_agent", self._node_student_debrief_agent)
             graph.add_node("teacher_coaching_agent", self._node_teacher_coaching_agent)
+            graph.add_node("memory_writer", self._node_memory_writer)
             graph.add_node("report_writer", self._node_report_writer)
 
-            graph.set_entry_point("metrics_analyzer")
+            graph.set_entry_point("memory_retriever")
+            graph.add_edge("memory_retriever", "metrics_analyzer")
             graph.add_edge("metrics_analyzer", "risk_agent")
             graph.add_edge("risk_agent", "difficulty_planner")
             graph.add_edge("difficulty_planner", "student_debrief_agent")
             graph.add_edge("student_debrief_agent", "teacher_coaching_agent")
-            graph.add_edge("teacher_coaching_agent", "report_writer")
+            graph.add_edge("teacher_coaching_agent", "memory_writer")
+            graph.add_edge("memory_writer", "report_writer")
             graph.add_edge("report_writer", END)
             return graph.compile()
         except Exception:
@@ -1083,17 +1270,45 @@ class TrainingAnalysisGraph:
 
     def _run_sequential(self, state: TrainingAnalysisState) -> TrainingAnalysisState:
         for node in (
+            self._node_memory_retriever,
             self._node_metrics_analyzer,
             self._node_risk_agent,
             self._node_difficulty_planner,
             self._node_student_debrief_agent,
             self._node_teacher_coaching_agent,
+            self._node_memory_writer,
             self._node_report_writer,
         ):
             update = node(state)
             state.update(update)
         state["graph_backend"] = "sequential"
         return state
+
+    def _node_memory_retriever(self, state: TrainingAnalysisState) -> Dict[str, Any]:
+        username = state.get("username") or "unknown"
+        try:
+            memory = self.memory_store.load(username)
+            count = int(_as_float(memory.get("total_sessions_seen")))
+            if get_language() == "zh":
+                summary = f"读取到 {count} 次历史训练记忆" if count else "暂无历史训练记忆，建立新画像"
+            else:
+                summary = f"loaded {count} remembered training sessions" if count else "started a new learner memory"
+            return {
+                "agent_memory": memory,
+                "agent_trace": self._add_trace(state, "Memory Agent", summary),
+            }
+        except Exception as exc:
+            errors = list(state.get("errors", []))
+            errors.append(f"Memory retrieval failed: {exc}")
+            return {
+                "agent_memory": {},
+                "errors": errors,
+                "agent_trace": self._add_trace(
+                    state,
+                    "Memory Agent",
+                    "memory retrieval skipped after an error",
+                ),
+            }
 
     def _node_metrics_analyzer(self, state: TrainingAnalysisState) -> Dict[str, Any]:
         metrics = build_training_metrics(state.get("session", {}), state.get("recent_records", []))
@@ -1167,6 +1382,8 @@ class TrainingAnalysisGraph:
                 "Use metrics.accuracy_pct as the authoritative score. "
                 "When this training uses quiz data, quiz_correct_count / expected_events explains the score. "
                 "When it does not use quiz data, assessment_correct_count / expected_events explains the score. "
+                "Use agent_memory only for longitudinal learning patterns; do not invent history, "
+                "and do not expose memory field names in the student-facing report. "
                 "manual_reset_required is a hardware workflow note, not a student weakness. "
                 "Return JSON with keys: summary, score, risk_level, strengths, "
                 "areas_to_improve, next_steps. Lists must contain short strings."
@@ -1174,6 +1391,7 @@ class TrainingAnalysisGraph:
             payload={
                 "username": state.get("username"),
                 "metrics": _metrics_for_llm(metrics),
+                "agent_memory": compact_memory_for_prompt(state.get("agent_memory", {})),
                 "training_context": profile,
                 "risk_assessment": risk,
                 "difficulty_plan": plan,
@@ -1207,6 +1425,8 @@ class TrainingAnalysisGraph:
                 "When it does not use quiz data, assessment_correct_count / expected_events explains the score. "
                 "Do not expose raw metric field names such as quiz_correct_count, expected_events, "
                 "recent_avg_accuracy_pct, or trend_accuracy_delta_pct in the teacher-facing text. "
+                "Use agent_memory only for longitudinal coaching patterns; do not invent history, "
+                "and translate memory-derived insights into the requested language. "
                 "Use teacher-friendly clinical language instead. "
                 "Do not treat manual_reset_required as a student weakness; it is part of the current hardware workflow. "
                 "Return JSON with keys: student_level, difficulty_recommendation, "
@@ -1215,6 +1435,7 @@ class TrainingAnalysisGraph:
             payload={
                 "username": state.get("username"),
                 "metrics": _metrics_for_llm(metrics),
+                "agent_memory": compact_memory_for_prompt(state.get("agent_memory", {})),
                 "training_context": profile,
                 "risk_assessment": risk,
                 "difficulty_plan": plan,
@@ -1230,12 +1451,52 @@ class TrainingAnalysisGraph:
             ),
         }
 
+    def _node_memory_writer(self, state: TrainingAnalysisState) -> Dict[str, Any]:
+        username = state.get("username") or "unknown"
+        metrics = state.get("metrics", {})
+        risk = state.get("risk_assessment", {})
+        plan = state.get("difficulty_plan", {})
+        student = state.get("student_debrief", {})
+        teacher = state.get("teacher_advice", {})
+
+        try:
+            memory = self.memory_store.update_from_analysis(
+                username,
+                metrics,
+                risk=risk,
+                plan=plan,
+                student_debrief=student,
+                teacher_advice=teacher,
+            )
+            count = int(_as_float(memory.get("total_sessions_seen")))
+            if get_language() == "zh":
+                summary = f"已更新长期学习画像，当前记住 {count} 次训练"
+            else:
+                summary = f"updated long-term learner memory with {count} remembered sessions"
+            return {
+                "updated_memory": memory,
+                "agent_trace": self._add_trace(state, "Memory Agent", summary),
+            }
+        except Exception as exc:
+            errors = list(state.get("errors", []))
+            errors.append(f"Memory update failed: {exc}")
+            return {
+                "updated_memory": state.get("agent_memory", {}),
+                "errors": errors,
+                "agent_trace": self._add_trace(
+                    state,
+                    "Memory Agent",
+                    "memory update skipped after an error",
+                ),
+            }
+
     def _node_report_writer(self, state: TrainingAnalysisState) -> Dict[str, Any]:
         student = state.get("student_debrief", {})
         teacher = state.get("teacher_advice", {})
         metrics = state.get("metrics", {})
         risk = state.get("risk_assessment", {})
         plan = state.get("difficulty_plan", {})
+        memory = state.get("updated_memory") or state.get("agent_memory", {})
         decision_basis = build_decision_basis(metrics, risk, plan)
         trace = self._add_trace(
             state,
@@ -1252,6 +1513,7 @@ class TrainingAnalysisGraph:
                 plan=plan,
                 decision_basis=decision_basis,
                 trace=trace,
+                memory=memory,
                 backend=state.get("graph_backend", "sequential"),
             ),
             "final_teacher_report": render_teacher_report(
@@ -1261,6 +1523,7 @@ class TrainingAnalysisGraph:
                 plan=plan,
                 decision_basis=decision_basis,
                 trace=trace,
+                memory=memory,
                 backend=state.get("graph_backend", "sequential"),
             ),
         }
